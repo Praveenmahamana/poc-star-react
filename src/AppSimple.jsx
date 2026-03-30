@@ -3,10 +3,8 @@ import initialBundle from "./generated/dashboard_bundle.json";
 
 const tabs = [
   { id: "summary", label: "Network" },
-  { id: "flight", label: "Flight View" },
-  { id: "flightReport", label: "Flight Report" },
-  { id: "itineraryReport", label: "Itinerary Report" },
-  { id: "preferences", label: "Preferences" },
+  { id: "flightView", label: "Flight View" },
+  { id: "odView", label: "O&D View" },
 ];
 
 function formatNumber(value, digits = 0) {
@@ -562,33 +560,6 @@ function OdDetailPanel({ od, odRow, flightRows, itineraryRows, status, onClose, 
   );
 }
 
-function ScheduleHeatmap({ rows, title }) {
-  const dayLabels = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
-  const bucketLabels = ["00-03", "04-07", "08-11", "12-15", "16-19", "20-23"];
-  const matrix = bucketLabels.map((bucket) =>
-    dayLabels.map((_, dayIndex) => rows.reduce((sum, row) => sum + (timeBucketLabel(row["Dept Time"]) === bucket && activeDaysFromFreq(row["Freq"]).includes(dayIndex) ? 1 : 0), 0)),
-  );
-  const maxValue = Math.max(...matrix.flat(), 1);
-  return (
-    <div className="chart-card">
-      <div className="chart-head"><h3>{title}</h3><p>Weekly frequency by departure time and weekday.</p></div>
-      {!rows.length ? <div className="empty-state">No rows available.</div> : null}
-      {rows.length ? <div className="heatmap-shell">
-        <div className="heatmap-grid heatmap-header"><div />{dayLabels.map((day) => <div key={day} className="heatmap-axis-label">{day}</div>)}</div>
-        {bucketLabels.map((bucket, rowIndex) => (
-          <div key={bucket} className="heatmap-grid">
-            <div className="heatmap-axis-label">{bucket}</div>
-            {matrix[rowIndex].map((value, colIndex) => (
-              <div key={`${bucket}-${colIndex}`} className="heatmap-cell" style={{ background: `rgba(32, 101, 209, ${0.08 + (value / maxValue) * 0.72})` }}>
-                {value ? formatNumber(value, 0) : ""}
-              </div>
-            ))}
-          </div>
-        ))}
-      </div> : null}
-    </div>
-  );
-}
 
 export default function AppSimple() {
   const [activeTab, setActiveTab] = useState("summary");
@@ -601,17 +572,19 @@ export default function AppSimple() {
   const [odDetailItineraryRows, setOdDetailItineraryRows] = useState([]);
   const [odDetailStatus, setOdDetailStatus] = useState("idle");
 
+  // Flight View state
+  const [fvOrig, setFvOrig] = useState("");
+  const [fvDest, setFvDest] = useState("");
+  const [fvAirlineFilter, setFvAirlineFilter] = useState("all");
+  const [selectedFlightKey, setSelectedFlightKey] = useState(null);
+  const [fvCompFlightRows, setFvCompFlightRows] = useState([]);
+
   // Workset state
   const defaultWorksetId = initialBundle?.profile?.workset || "WORKSET12061";
   const [bundle, setBundle] = useState(initialBundle);
   const [worksets, setWorksets] = useState([{ id: defaultWorksetId, label: defaultWorksetId }]);
   const [worksetId, setWorksetId] = useState(defaultWorksetId);
   const [worksetLoading, setWorksetLoading] = useState(false);
-
-  // Preference data
-  const [alnPrefData, setAlnPrefData] = useState([]);
-  const [alliancePrefData, setAlliancePrefData] = useState([]);
-  const [relfarePrefData, setRelfarePrefData] = useState([]);
 
   // Load worksets index once
   useEffect(() => {
@@ -620,7 +593,7 @@ export default function AppSimple() {
       .catch(() => { /* keep default */ });
   }, []);
 
-  // When workset changes, load bundle + preferences
+  // When workset changes, load bundle
   useEffect(() => {
     if (worksetId === defaultWorksetId) {
       setBundle(initialBundle);
@@ -630,20 +603,11 @@ export default function AppSimple() {
         .then((data) => { setBundle(data); setWorksetLoading(false); })
         .catch(() => setWorksetLoading(false));
     }
-    Promise.all([
-      fetchJson(`/data/worksets/${worksetId}/alnPref.json`).catch(() => []),
-      fetchJson(`/data/worksets/${worksetId}/alliancePref.json`).catch(() => []),
-      fetchJson(`/data/worksets/${worksetId}/relfarePref.json`).catch(() => []),
-    ]).then(([a, al, r]) => { setAlnPrefData(a); setAlliancePrefData(al); setRelfarePrefData(r); });
   }, [worksetId]);
 
   const dataBasePath = `/data/worksets/${worksetId}`;
 
   const odOptions = useMemo(() => (bundle?.level1_host_od_summary || []).map((row) => `${row.orig}-${row.dest}`), [bundle]);
-  const [selectedOrig, selectedDest] = selectedOd.split("-");
-  const flightRows = (bundle?.level3_host_flight_summary || []).filter((row) => row.orig === selectedOrig && row.dest === selectedDest);
-  const flowRows = (bundle?.flight_spill_breakdown || []).filter((row) => row.flight_orig === selectedOrig && row.flight_dest === selectedDest);
-  const primaryFlight = [...flightRows].sort((left, right) => Number(right.spill_total_pax_est || 0) - Number(left.spill_total_pax_est || 0))[0];
   const hostPax = (bundle?.level1_host_od_summary || []).reduce((sum, row) => sum + Number(row.weekly_pax_est || 0), 0);
   const hostSeats = (bundle?.level1_host_od_summary || []).reduce((sum, row) => sum + Number(row.weekly_seats_est || 0), 0);
   const avgLoadFactor = hostSeats ? (hostPax / hostSeats) * 100 : 0;
@@ -692,8 +656,6 @@ export default function AppSimple() {
   const totalFlowPax = odNetworkRows.reduce((sum, row) => sum + row.flowPax, 0);
   const totalLocalRevenue = odNetworkRows.reduce((sum, row) => sum + row.localRevenue, 0);
   const totalFlowRevenue = odNetworkRows.reduce((sum, row) => sum + row.flowRevenue, 0);
-  const odDemandContributionRows = null;
-  const odRevenueContributionRows = null;
 
   useEffect(() => {
     let cancelled = false;
@@ -731,9 +693,140 @@ export default function AppSimple() {
   }, [networkClickedOd]);
 
   const hostAirline = bundle?.profile?.host_airline || "";
-  const hostFlightReportRows = flightReportRows.filter((row) => String(row["Flt Desg"] || "").trim().startsWith(`${hostAirline} `));
-  const competitorFlightReportRows = flightReportRows.filter((row) => !String(row["Flt Desg"] || "").trim().startsWith(`${hostAirline} `));
   const networkClickedOdRow = networkClickedOd ? odNetworkRows.find((r) => r.od === networkClickedOd) ?? null : null;
+
+  // Load competitor flights for Flight View when origin+dest both selected
+  useEffect(() => {
+    if (!fvOrig || !fvDest) { setFvCompFlightRows([]); return; }
+    const od = `${fvOrig}-${fvDest}`;
+    let cancelled = false;
+    fetchJson(`${dataBasePath}/flight-report-db/${od}.json`)
+      .then((data) => { if (!cancelled) setFvCompFlightRows(data); })
+      .catch(() => { if (!cancelled) setFvCompFlightRows([]); });
+    return () => { cancelled = true; };
+  }, [fvOrig, fvDest, dataBasePath]);
+
+  // Flight View: unique origins from all host flights
+  const fvOrigOptions = useMemo(() =>
+    [...new Set((bundle?.level3_host_flight_summary || []).map((r) => r.orig))].sort(),
+  [bundle]);
+
+  // Flight View: destinations filtered by selected origin
+  const fvDestOptions = useMemo(() => {
+    const all = bundle?.level3_host_flight_summary || [];
+    const dests = fvOrig
+      ? [...new Set(all.filter((r) => r.orig === fvOrig).map((r) => r.dest))]
+      : [...new Set(all.map((r) => r.dest))];
+    return dests.sort();
+  }, [bundle, fvOrig]);
+
+  // Flight View: host flights (from bundle, filtered)
+  const fvHostFlights = useMemo(() =>
+    (bundle?.level3_host_flight_summary || [])
+      .filter((r) => (!fvOrig || r.orig === fvOrig) && (!fvDest || r.dest === fvDest))
+      .map((r) => ({
+        isHost: true,
+        key: `${hostAirline}-${r.flight_number}-${r.orig}-${r.dest}`,
+        airline: hostAirline,
+        flightNumber: r.flight_number,
+        orig: r.orig, dest: r.dest,
+        freq: null,
+        weeklyDeps: r.weekly_departures,
+        equipment: r.equipment,
+        seatsPerDep: r.avg_seats_per_departure,
+        deptTime: null, arvlTime: null, elapTime: null,
+        observedPax: r.weekly_pax_est,
+        totalPax: r.spill_total_pax_est,
+        localPax: r.spill_local_pax_est,
+        flowPax: r.spill_flow_pax_est,
+        loadFactor: r.load_factor_pct_est,
+        revenue: r.spill_total_revenue_est,
+        avgFare: r.spill_avg_total_fare_est,
+      })),
+  [bundle, fvOrig, fvDest, hostAirline]);
+
+  // Flight View: competitor flights (from fetched data for selected OD)
+  const fvCompFlights = useMemo(() =>
+    fvCompFlightRows
+      .filter((r) => {
+        const aln = String(r["Flt Desg"] || "").trim().split(" ")[0];
+        return aln !== hostAirline;
+      })
+      .map((r) => ({
+        isHost: false,
+        key: `comp-${r["Flt Desg"]}-${r["Dept Sta"]}-${r["Arvl Sta"]}`,
+        airline: String(r["Flt Desg"] || "").trim().split(" ")[0],
+        flightNumber: String(r["Flt Desg"] || "").trim(),
+        orig: r["Dept Sta"], dest: r["Arvl Sta"],
+        freq: r["Freq"],
+        weeklyDeps: countFreqDays(r["Freq"]),
+        equipment: r["Subfleet"],
+        seatsPerDep: Number(r["Seats"] || 0),
+        deptTime: r["Dept Time"], arvlTime: r["Arvl Time"], elapTime: r["Elap Time"],
+        observedPax: Number(r["Total Traffic"] || 0),
+        totalPax: null, localPax: null, flowPax: null,
+        loadFactor: Number(r["Load Factor (%)"] || 0),
+        revenue: Number(r["Pax Revenue($)"] || 0),
+        avgFare: null,
+      })),
+  [fvCompFlightRows, hostAirline]);
+
+  // Flight View: combined and filtered
+  const fvFilteredFlights = useMemo(() => {
+    let result = [];
+    if (fvAirlineFilter !== "competitors") result = [...fvHostFlights];
+    if (fvAirlineFilter !== "host") result = [...result, ...fvCompFlights];
+    return result.sort((a, b) => {
+      if (a.isHost && !b.isHost) return -1;
+      if (!a.isHost && b.isHost) return 1;
+      return (a.orig + a.dest + a.flightNumber).localeCompare(b.orig + b.dest + b.flightNumber);
+    });
+  }, [fvHostFlights, fvCompFlights, fvAirlineFilter]);
+
+  const fvSelectedFlight = selectedFlightKey ? fvFilteredFlights.find((f) => f.key === selectedFlightKey) ?? null : null;
+
+  // Flow OD rows for the selected host flight
+  const fvFlowRows = useMemo(() => {
+    if (!fvSelectedFlight?.isHost) return [];
+    return (bundle?.flight_spill_breakdown || [])
+      .filter((r) => r.flight_number === fvSelectedFlight.flightNumber && r.flight_orig === fvSelectedFlight.orig && r.flight_dest === fvSelectedFlight.dest)
+      .filter((r) => Number(r.flow_pax_est || 0) > 0 || Number(r.flow_revenue_est || 0) > 0)
+      .map((r) => ({ ...r, label: `${r.flow_orig}–${r.flow_dest}` }))
+      .sort((a, b) => Number(b.flow_pax_est || 0) - Number(a.flow_pax_est || 0));
+  }, [fvSelectedFlight, bundle]);
+
+  // O&D View: market summary rows
+  const odViewMarketRows = useMemo(() => {
+    const groups = new Map();
+    for (const row of itineraryRows) {
+      const aln = String(row["Flt Desg (Seg1)"] || "").trim().split(/\s+/)[0] || "?";
+      const stops = Number(row["Stops"] || 0);
+      const freq = countFreqDays(row["Freq"]);
+      const demand = Number(row["Total Demand"] || 0);
+      const traffic = Number(row["Total Traffic"] || 0);
+      const revenue = Number(row["Pax Revenue($)"] || 0);
+      const g = groups.get(aln) || { aln, nstops: 0, cncts: 0, demand: 0, traffic: 0, revenue: 0 };
+      if (stops === 0) g.nstops += freq; else g.cncts += freq;
+      g.demand += demand; g.traffic += traffic; g.revenue += revenue;
+      groups.set(aln, g);
+    }
+    const rows = [...groups.values()].sort((a, b) => b.demand - a.demand);
+    const mktDemand = rows.reduce((s, r) => s + r.demand, 0) || 1;
+    const mktTraffic = rows.reduce((s, r) => s + r.traffic, 0) || 1;
+    const mktRevenue = rows.reduce((s, r) => s + r.revenue, 0) || 1;
+    return rows.map((r) => ({
+      ...r,
+      demandShare: (r.demand / mktDemand) * 100,
+      trafficShare: (r.traffic / mktTraffic) * 100,
+      revenueShare: (r.revenue / mktRevenue) * 100,
+      avgFare: r.traffic > 0 ? r.revenue / r.traffic : 0,
+      mktDemand, mktTraffic, mktRevenue,
+    }));
+  }, [itineraryRows]);
+
+  const odViewHostRow = odViewMarketRows.find((r) => r.aln === hostAirline) ?? null;
+  const odViewMarketSize = odViewMarketRows.reduce((s, r) => s + r.demand, 0);
+  const odViewTotalRevenue = odViewMarketRows.reduce((s, r) => s + r.revenue, 0);
 
   return (
     <div className="app-shell app-shell-vision">
@@ -755,7 +848,7 @@ export default function AppSimple() {
                 </select>
               </div>
             ) : null}
-            {activeTab !== "summary" ? (
+            {activeTab === "odView" ? (
               <div className="selector-wrap topbar-selector">
                 <label htmlFor="od-selector">Selected OD</label>
                 <select id="od-selector" value={selectedOd} onChange={(event) => setSelectedOd(event.target.value)}>
@@ -797,182 +890,309 @@ export default function AppSimple() {
               selectedKey={networkClickedOd}
               selectedKeyField="od"
             />
-            <div className="two-column-grid">
-              <ScheduleHeatmap rows={hostFlightReportRows} title={`Host weekly departure heatmap (${selectedOd})`} />
-              <ScheduleHeatmap rows={competitorFlightReportRows} title={`Competitor weekly departure heatmap (${selectedOd})`} />
-            </div>
           </div> : null}
 
-          {activeTab === "flight" ? <div className="tab-content">
-            <SectionHeading title={`Flight View: ${selectedOd}`} subtitle="Host flight-level view with spill-adjusted metrics." />
-            <div className="tile-grid five-up">
-              <Tile label="Observed Leg Pax" value={primaryFlight ? formatNumber(primaryFlight.weekly_pax_est, 1) : "NA"} sub="From BASEDATA" accent />
-              <Tile label="Spill Total Pax" value={primaryFlight ? formatNumber(primaryFlight.spill_total_pax_est, 1) : "NA"} sub="Local plus flow" />
-              <Tile label="Spill Local Pax" value={primaryFlight ? formatNumber(primaryFlight.spill_local_pax_est, 1) : "NA"} sub="Local contribution" />
-              <Tile label="Spill Flow Pax" value={primaryFlight ? formatNumber(primaryFlight.spill_flow_pax_est, 1) : "NA"} sub="Flow contribution" />
-              <Tile label="Spill LF" value={primaryFlight ? formatPct(primaryFlight.spill_load_factor_pct_est, 1) : "NA"} sub="Spill-adjusted LF" />
-            </div>
-            <Table
-              columns={[
-                { key: "flight_number", label: "Flight" },
-                { key: "weekly_departures", label: "Wkly Deps", render: (value) => formatNumber(value, 0) },
-                { key: "weekly_pax_est", label: "Observed Pax", render: (value) => formatNumber(value, 1) },
-                { key: "spill_total_pax_est", label: "Spill Total Pax", render: (value) => formatNumber(value, 1) },
-                { key: "spill_local_pax_est", label: "Local Pax", render: (value) => formatNumber(value, 1) },
-                { key: "spill_flow_pax_est", label: "Flow Pax", render: (value) => formatNumber(value, 1) },
-              ]}
-              rows={flightRows}
-              emptyMessage="No host flight rows found for this directional OD."
-            />
-            <Table
-              columns={[
-                { key: "label", label: "Flow OD" },
-                { key: "flow_pax_est", label: "Flow Pax", render: (value) => formatNumber(value, 1) },
-                { key: "flow_revenue_est", label: "Flow Revenue", render: (value) => formatNumber(value, 0) },
-              ]}
-              rows={primaryFlight ? flowRows.filter((row) => row.flight_number === primaryFlight.flight_number).map((row) => ({ ...row, label: `${row.flow_orig}-${row.flow_dest}` })) : []}
-              emptyMessage="No spill flow contributors for the primary host flight."
-            />
-          </div> : null}
+          {activeTab === "flightView" ? (
+  <div className="tab-content">
+    {/* Filter Bar */}
+    <div className="fv-filter-bar">
+      <div className="fv-filter-item">
+        <label className="fv-filter-label">Origin</label>
+        <select className="fv-filter-select" value={fvOrig} onChange={(e) => { setFvOrig(e.target.value); setFvDest(""); setSelectedFlightKey(null); }}>
+          <option value="">All Origins</option>
+          {fvOrigOptions.map((o) => <option key={o} value={o}>{o}</option>)}
+        </select>
+      </div>
+      <div className="fv-filter-item">
+        <label className="fv-filter-label">Destination</label>
+        <select className="fv-filter-select" value={fvDest} onChange={(e) => { setFvDest(e.target.value); setSelectedFlightKey(null); }}>
+          <option value="">All Destinations</option>
+          {fvDestOptions.map((d) => <option key={d} value={d}>{d}</option>)}
+        </select>
+      </div>
+      <div className="fv-filter-item">
+        <label className="fv-filter-label">Show</label>
+        <select className="fv-filter-select" value={fvAirlineFilter} onChange={(e) => setFvAirlineFilter(e.target.value)}>
+          <option value="all">All Airlines</option>
+          <option value="host">{hostAirline} only</option>
+          <option value="competitors">Competitors only</option>
+        </select>
+      </div>
+      {(fvOrig || fvDest || fvAirlineFilter !== "all") ? (
+        <button className="fv-clear-btn" onClick={() => { setFvOrig(""); setFvDest(""); setFvAirlineFilter("all"); setSelectedFlightKey(null); }}>
+          Clear filters
+        </button>
+      ) : null}
+      {fvOrig && fvDest ? (
+        <span className="fv-comp-hint">Competitor data loaded for {fvOrig}–{fvDest}</span>
+      ) : (
+        <span className="fv-comp-hint">Select Origin + Destination to load competitor flights</span>
+      )}
+    </div>
 
-          {activeTab === "flightReport" ? <div className="tab-content">
-            <SectionHeading title={`Flight Report: ${selectedOd}`} subtitle="OD-level flight report table." />
-            <Table
-              columns={[
-                { key: "Dept Sta", label: "Dept Sta" },
-                { key: "Arvl Sta", label: "Arvl Sta" },
-                { key: "Flt Desg", label: "Flt Desg" },
-                { key: "Freq", label: "Freq" },
-                { key: "Dept Time", label: "Dept Time" },
-                { key: "Arvl Time", label: "Arvl Time" },
-                { key: "Elap Time", label: "Elap Time" },
-                { key: "Subfleet", label: "Subfleet" },
-                { key: "Seats", label: "Seats", render: (value) => formatNumber(value, 0) },
-                { key: "Distance(km)", label: "Distance", render: (value) => formatNumber(value, 0) },
-                { key: "Total Demand", label: "Total Demand", render: (value) => formatNumber(value, 2) },
-                { key: "Total Traffic", label: "Total Traffic", render: (value) => formatNumber(value, 2) },
-                { key: "Lcl Demand (Mktd)", label: "Local Demand", render: (value) => formatNumber(value, 2) },
-                { key: "Lcl Traffic", label: "Local Traffic", render: (value) => formatNumber(value, 2) },
-                { key: "Load Factor (%)", label: "LF %", render: (value) => formatPct(value, 1) },
-                { key: "Pax Revenue($)", label: "Pax Revenue", render: (value) => formatNumber(value, 0) },
-                { key: "Total Revenue($)", label: "Total Revenue", render: (value) => formatNumber(value, 0) },
-                { key: "Total Yield(Cents per RPk)", label: "Yield", render: (value) => formatNumber(value, 1) },
-              ]}
-              rows={flightReportRows}
-              emptyMessage="No flight report rows were generated for this OD."
-            />
-          </div> : null}
+    {/* Summary KPI Strip */}
+    {fvFilteredFlights.length > 0 ? (
+      <div className="fv-kpi-strip">
+        <div className="fv-kpi-card">
+          <div className="fv-kpi-label">{hostAirline} Flights</div>
+          <div className="fv-kpi-value">{fvFilteredFlights.filter((f) => f.isHost).length}</div>
+        </div>
+        <div className="fv-kpi-card">
+          <div className="fv-kpi-label">Competitor Flights</div>
+          <div className="fv-kpi-value">{fvFilteredFlights.filter((f) => !f.isHost).length}</div>
+        </div>
+        <div className="fv-kpi-card">
+          <div className="fv-kpi-label">{hostAirline} Weekly Pax</div>
+          <div className="fv-kpi-value">{formatNumber(fvFilteredFlights.filter((f) => f.isHost).reduce((s, f) => s + (f.totalPax || 0), 0), 1)}</div>
+        </div>
+        <div className="fv-kpi-card">
+          <div className="fv-kpi-label">{hostAirline} Local Pax</div>
+          <div className="fv-kpi-value">{formatNumber(fvFilteredFlights.filter((f) => f.isHost).reduce((s, f) => s + (f.localPax || 0), 0), 1)}</div>
+        </div>
+        <div className="fv-kpi-card">
+          <div className="fv-kpi-label">{hostAirline} Flow Pax</div>
+          <div className="fv-kpi-value">{formatNumber(fvFilteredFlights.filter((f) => f.isHost).reduce((s, f) => s + (f.flowPax || 0), 0), 1)}</div>
+        </div>
+        <div className="fv-kpi-card accent">
+          <div className="fv-kpi-label">{hostAirline} Revenue</div>
+          <div className="fv-kpi-value">{formatNumber(fvFilteredFlights.filter((f) => f.isHost).reduce((s, f) => s + (f.revenue || 0), 0), 0)}</div>
+        </div>
+      </div>
+    ) : null}
 
-          {activeTab === "itineraryReport" ? <div className="tab-content">
-            <SectionHeading title={`Itinerary Report: ${selectedOd}`} subtitle="OD-level itinerary report table plus simple connection diagnostics." />
-            <Table
-              columns={[
-                { key: "Dept Arp", label: "Dept Arp" },
-                { key: "Arvl Arp", label: "Arvl Arp" },
-                { key: "Flt Desg (Seg1)", label: "Flt Desg (Seg1)" },
-                { key: "Connect Point 1", label: "Connect Point 1" },
-                { key: "Minimum Connect Time 1", label: "Min Connect 1" },
-                { key: "Connect Time 1", label: "Connect Time 1" },
-                { key: "Flt Desg (Seg2)", label: "Flt Desg (Seg2)" },
-                { key: "Stops", label: "Stops", render: (value) => formatNumber(value, 0) },
-                { key: "Freq", label: "Freq" },
-                { key: "Elap Time", label: "Elap Time" },
-                { key: "Total Demand", label: "Total Demand", render: (value) => formatNumber(value, 2) },
-                { key: "Total Traffic", label: "Total Traffic", render: (value) => formatNumber(value, 2) },
-                { key: "Pax Revenue($)", label: "Pax Revenue", render: (value) => formatNumber(value, 0) },
-              ]}
-              rows={itineraryRows}
-              emptyMessage="No itinerary report rows were generated for this OD."
-            />
-            <Table
-              columns={[
-                { key: "label", label: "Connection Itinerary" },
-                { key: "slack1", label: "Slack 1", render: (value) => (value === null ? "NA" : `${value >= 0 ? "+" : ""}${formatNumber(value, 0)} min`) },
-              ]}
-              rows={itineraryRows.filter((row) => Number(row["Stops"] || 0) > 0).map((row) => ({ ...row, label: `${row["Flt Desg (Seg1)"]} + ${row["Flt Desg (Seg2)"]}`, slack1: computeSlack(row["Connect Time 1"], row["Minimum Connect Time 1"]) }))}
-              emptyMessage="No connecting itineraries were generated for this OD."
-            />
-          </div> : null}
+    {/* Flight Table */}
+    <div className="fv-table-wrap">
+      <div className="table-shell">
+        <table>
+          <thead>
+            <tr>
+              <th>Airline</th><th>Flight #</th><th>Orig</th><th>Dest</th>
+              <th>Freq</th><th>Wkly Deps</th><th>A/C</th><th>Seats/Dep</th>
+              <th>Dept</th><th>Arvl</th><th>Elap</th>
+              <th>Obs Pax</th><th>LF %</th>
+              <th>Spill Total</th><th>Local Pax</th><th>Flow Pax</th>
+              <th>Revenue</th><th>Avg Fare</th>
+            </tr>
+          </thead>
+          <tbody>
+            {fvFilteredFlights.length === 0 ? (
+              <tr><td colSpan={18} style={{ textAlign: "center", padding: "24px", color: "var(--text-secondary)", fontStyle: "italic" }}>No flights match the selected filters.</td></tr>
+            ) : fvFilteredFlights.map((f) => (
+              <tr
+                key={f.key}
+                className={`row-clickable ${f.isHost ? "fv-host-row" : "fv-comp-row"} ${selectedFlightKey === f.key ? "row-selected" : ""}`}
+                onClick={() => setSelectedFlightKey((prev) => prev === f.key ? null : f.key)}
+              >
+                <td><strong style={{ color: f.isHost ? "var(--accent-light)" : "var(--text-primary)" }}>{f.airline}</strong></td>
+                <td>{f.flightNumber}</td>
+                <td>{f.orig}</td><td>{f.dest}</td>
+                <td className="mono">{f.freq || "—"}</td>
+                <td>{formatNumber(f.weeklyDeps, 0)}</td>
+                <td>{f.equipment || "—"}</td>
+                <td>{formatNumber(f.seatsPerDep, 0)}</td>
+                <td>{f.deptTime || "—"}</td>
+                <td>{f.arvlTime || "—"}</td>
+                <td>{f.elapTime || "—"}</td>
+                <td>{formatNumber(f.observedPax, 1)}</td>
+                <td>{formatPct(f.loadFactor, 1)}</td>
+                <td>{f.isHost ? formatNumber(f.totalPax, 1) : "—"}</td>
+                <td>{f.isHost ? formatNumber(f.localPax, 1) : "—"}</td>
+                <td>{f.isHost ? formatNumber(f.flowPax, 1) : "—"}</td>
+                <td>{formatNumber(f.revenue, 0)}</td>
+                <td>{f.avgFare != null ? formatNumber(f.avgFare, 0) : "—"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
 
-          {activeTab === "preferences" ? <div className="tab-content">
-            <SectionHeading title="Workset Preferences" subtitle={`Preference parameters loaded for workset ${worksetId}.`} />
+    {/* Flow OD Detail Panel (shown when a host flight is clicked) */}
+    {fvSelectedFlight?.isHost ? (
+      <div className="fv-detail-panel">
+        <div className="fv-detail-head">
+          <h4>{hostAirline} {fvSelectedFlight.flightNumber} — Flow OD Breakdown <span className="fv-detail-od">({fvSelectedFlight.orig} → {fvSelectedFlight.dest})</span></h4>
+          <p>Connecting passengers and revenue flowing through this flight from other origin markets</p>
+        </div>
+        <div className="fv-detail-stats">
+          <div className="fv-ds"><span>Total Spill Pax</span><strong>{formatNumber(fvSelectedFlight.totalPax, 1)}</strong></div>
+          <div className="fv-ds"><span>Local Pax</span><strong>{formatNumber(fvSelectedFlight.localPax, 1)}</strong></div>
+          <div className="fv-ds"><span>Flow Pax</span><strong>{formatNumber(fvSelectedFlight.flowPax, 1)}</strong></div>
+          <div className="fv-ds"><span>Flow %</span><strong>{fvSelectedFlight.totalPax > 0 ? formatPct((fvSelectedFlight.flowPax / fvSelectedFlight.totalPax) * 100, 1) : "—"}</strong></div>
+          <div className="fv-ds"><span>Total Revenue</span><strong>{formatNumber(fvSelectedFlight.revenue, 0)}</strong></div>
+        </div>
+        {fvFlowRows.length > 0 ? (
+          <Table
+            columns={[
+              { key: "label", label: "Flow OD", render: (v) => <strong>{v}</strong> },
+              { key: "flow_orig", label: "Flow Orig" },
+              { key: "flow_dest", label: "Flow Dest" },
+              { key: "flow_pax_est", label: "Flow Pax", render: (v) => formatNumber(v, 1) },
+              { key: "flow_revenue_est", label: "Flow Revenue", render: (v) => formatNumber(v, 0) },
+            ]}
+            rows={fvFlowRows}
+            emptyMessage="No flow OD data found."
+          />
+        ) : (
+          <div className="empty-state">No flow OD contributors for this flight.</div>
+        )}
+      </div>
+    ) : fvSelectedFlight && !fvSelectedFlight.isHost ? (
+      <div className="fv-detail-panel">
+        <div className="fv-detail-head">
+          <h4>{fvSelectedFlight.flightNumber} — Flight Details <span className="fv-detail-od">({fvSelectedFlight.orig} → {fvSelectedFlight.dest})</span></h4>
+          <p>Competitor flight operational metrics from the flight report</p>
+        </div>
+        <div className="fv-detail-stats">
+          <div className="fv-ds"><span>Weekly Deps</span><strong>{formatNumber(fvSelectedFlight.weeklyDeps, 0)}</strong></div>
+          <div className="fv-ds"><span>A/C Type</span><strong>{fvSelectedFlight.equipment || "—"}</strong></div>
+          <div className="fv-ds"><span>Seats/Dep</span><strong>{formatNumber(fvSelectedFlight.seatsPerDep, 0)}</strong></div>
+          <div className="fv-ds"><span>Observed Pax</span><strong>{formatNumber(fvSelectedFlight.observedPax, 1)}</strong></div>
+          <div className="fv-ds"><span>Load Factor</span><strong>{formatPct(fvSelectedFlight.loadFactor, 1)}</strong></div>
+          <div className="fv-ds"><span>Revenue</span><strong>{formatNumber(fvSelectedFlight.revenue, 0)}</strong></div>
+        </div>
+      </div>
+    ) : null}
+  </div>
+) : null}
 
-            <div className="pref-section">
-              <h3 className="pref-section-title">Relative Fare Preferences <span className="pref-count">({relfarePrefData.length} rows)</span></h3>
-              <p className="pref-section-desc">Airline-specific fare adjustment factors by O&amp;D and entity. HOVAL/LOVAL = high/low pax value; HRVAL/LRVAL = high/low revenue value.</p>
-              {relfarePrefData.length ? (
-                <div className="pref-table-wrap">
-                  <table className="pref-table">
-                    <thead><tr>
-                      <th>Org Lvl</th><th>Org</th><th>Dest Lvl</th><th>Dest</th><th>Entity</th>
-                      <th>Airline</th><th>Day Qtr</th><th>Hi Pax Val</th><th>Lo Pax Val</th><th>Hi Rev Val</th><th>Lo Rev Val</th>
-                    </tr></thead>
-                    <tbody>{relfarePrefData.map((r, i) => (
-                      <tr key={i}>
-                        <td>{r["ORGLVL"]}</td><td>{r["ORG"]}</td><td>{r["DESTLVL"]}</td><td>{r["DEST"]}</td><td>{r["ENTNM"]}</td>
-                        <td><strong>{r["ALN"]}</strong></td><td>{r["DAYQTR"]}</td>
-                        <td className="pref-val">{r["HOVAL"]}</td><td className="pref-val">{r["LOVAL"]}</td>
-                        <td className="pref-val">{r["HRVAL"]}</td><td className="pref-val">{r["LRVAL"]}</td>
-                      </tr>
-                    ))}</tbody>
-                  </table>
-                </div>
-              ) : <div className="pref-empty">No relative fare preference data found for this workset.</div>}
-            </div>
+          {activeTab === "odView" ? (
+  <div className="tab-content">
+    {reportStatus === "loading" ? <div className="loading">Loading O&D data…</div> : null}
 
-            <div className="pref-section">
-              <h3 className="pref-section-title">Airline Preferences <span className="pref-count">({alnPrefData.length} rows)</span></h3>
-              <p className="pref-section-desc">Airline preference factors by O&amp;D, entity, and connection type. HOVAL/LOVAL = high/low pax value; HRVAL/LRVAL = high/low revenue value.</p>
-              {alnPrefData.length ? (
-                <div className="pref-table-wrap">
-                  <table className="pref-table">
-                    <thead><tr>
-                      <th>Org Lvl</th><th>Org</th><th>Dest Lvl</th><th>Dest</th><th>Entity</th>
-                      <th>Connect Lvl</th><th>Connect Code</th><th>Airline</th>
-                      <th>Hi Pax Val</th><th>Lo Pax Val</th><th>Hi Rev Val</th><th>Lo Rev Val</th>
-                    </tr></thead>
-                    <tbody>{alnPrefData.map((r, i) => (
-                      <tr key={i}>
-                        <td>{r["ORGLVL"]}</td><td>{r["ORG"]}</td><td>{r["DESTLVL"]}</td><td>{r["DEST"]}</td><td>{r["ENTNM"]}</td>
-                        <td>{r["CONNECTLVL"]}</td><td>{r["CONNECTCODE"]}</td><td><strong>{r["ALN"]}</strong></td>
-                        <td className="pref-val">{r["HOVAL"]}</td><td className="pref-val">{r["LOVAL"]}</td>
-                        <td className="pref-val">{r["HRVAL"]}</td><td className="pref-val">{r["LRVAL"]}</td>
-                      </tr>
-                    ))}</tbody>
-                  </table>
-                </div>
-              ) : <div className="pref-empty">No airline preference data found for this workset.</div>}
-            </div>
+    {/* KPI Cards */}
+    <div className="odv-kpi-strip">
+      <div className="odv-kpi-card accent">
+        <div className="odv-kpi-label">Market Size</div>
+        <div className="odv-kpi-value">{formatNumber(odViewMarketSize, 1)}</div>
+        <div className="odv-kpi-sub">Total demand (all carriers)</div>
+      </div>
+      <div className="odv-kpi-card host">
+        <div className="odv-kpi-label">{hostAirline} Demand Share</div>
+        <div className="odv-kpi-value">{odViewHostRow ? formatPct(odViewHostRow.demandShare, 1) : "—"}</div>
+        <div className="odv-kpi-sub">{odViewHostRow ? formatNumber(odViewHostRow.demand, 1) + " pax" : "No data"}</div>
+      </div>
+      <div className="odv-kpi-card host">
+        <div className="odv-kpi-label">{hostAirline} Traffic Share</div>
+        <div className="odv-kpi-value">{odViewHostRow ? formatPct(odViewHostRow.trafficShare, 1) : "—"}</div>
+        <div className="odv-kpi-sub">{odViewHostRow ? formatNumber(odViewHostRow.traffic, 1) + " boarded" : "No data"}</div>
+      </div>
+      <div className="odv-kpi-card host">
+        <div className="odv-kpi-label">{hostAirline} Revenue Share</div>
+        <div className="odv-kpi-value">{odViewHostRow ? formatPct(odViewHostRow.revenueShare, 1) : "—"}</div>
+        <div className="odv-kpi-sub">{odViewHostRow ? formatNumber(odViewHostRow.revenue, 0) : "No data"}</div>
+      </div>
+      <div className="odv-kpi-card">
+        <div className="odv-kpi-label">Market Revenue</div>
+        <div className="odv-kpi-value">{formatNumber(odViewTotalRevenue, 0)}</div>
+        <div className="odv-kpi-sub">All carriers combined</div>
+      </div>
+      <div className="odv-kpi-card">
+        <div className="odv-kpi-label">Airlines in Market</div>
+        <div className="odv-kpi-value">{odViewMarketRows.length}</div>
+        <div className="odv-kpi-sub">{itineraryRows.length} itineraries</div>
+      </div>
+    </div>
 
-            <div className="pref-section">
-              <h3 className="pref-section-title">Alliance Preferences <span className="pref-count">({alliancePrefData.length} rows)</span></h3>
-              <p className="pref-section-desc">Alliance preference scores for nonstop (NSTOP), connecting (CONN), and interline (INTR) service by geography and entity. H/L = high/low pax; HR/LR = high/low revenue.</p>
-              {alliancePrefData.length ? (
-                <div className="pref-table-wrap">
-                  <table className="pref-table">
-                    <thead><tr>
-                      <th>Alliance</th><th>Org Lvl</th><th>Org</th><th>Dest Lvl</th><th>Dest</th><th>Entity</th>
-                      <th>HO Nstop</th><th>LO Nstop</th><th>HR Nstop</th><th>LR Nstop</th>
-                      <th>HO Conn</th><th>LO Conn</th><th>HR Conn</th><th>LR Conn</th>
-                      <th>HO Intr</th><th>LO Intr</th><th>HR Intr</th><th>LR Intr</th>
-                    </tr></thead>
-                    <tbody>{alliancePrefData.map((r, i) => (
-                      <tr key={i}>
-                        <td><strong>{r["ALLNCENM"]}</strong></td>
-                        <td>{r["ORGLVL"]}</td><td>{r["ORG"]}</td><td>{r["DESTLVL"]}</td><td>{r["DEST"]}</td><td>{r["ENTNM"]}</td>
-                        <td className="pref-val">{r["HONSTOP"]}</td><td className="pref-val">{r["LONSTOP"]}</td>
-                        <td className="pref-val">{r["HRNSTOP"]}</td><td className="pref-val">{r["LRNSTOP"]}</td>
-                        <td className="pref-val">{r["HOCONN"]}</td><td className="pref-val">{r["LOCONN"]}</td>
-                        <td className="pref-val">{r["HRCONN"]}</td><td className="pref-val">{r["LRCONN"]}</td>
-                        <td className="pref-val">{r["HOINTR"]}</td><td className="pref-val">{r["LOINTR"]}</td>
-                        <td className="pref-val">{r["HRINTR"]}</td><td className="pref-val">{r["LRINTR"]}</td>
-                      </tr>
-                    ))}</tbody>
-                  </table>
-                </div>
-              ) : <div className="pref-empty">No alliance preference data found for this workset.</div>}
-            </div>
-          </div> : null}
+    {/* Market Summary Table */}
+    <div className="odv-section">
+      <div className="odv-section-head">
+        <h3>Market Report — {selectedOd}</h3>
+        <p>Competitive share breakdown by carrier · Pax itinerary view</p>
+      </div>
+      <div className="table-shell">
+        <table>
+          <thead>
+            <tr>
+              <th>Airline</th>
+              <th># Nonstops</th><th># Connections</th>
+              <th>Total Demand</th><th>Demand Share %</th>
+              <th>Total Traffic</th><th>Traffic Share %</th>
+              <th>Pax Revenue</th><th>Revenue Share %</th>
+              <th>Avg Fare</th>
+            </tr>
+          </thead>
+          <tbody>
+            {odViewMarketRows.length === 0 ? (
+              <tr><td colSpan={10} style={{ textAlign: "center", padding: "24px", color: "var(--text-secondary)", fontStyle: "italic" }}>Select an OD to view market data.</td></tr>
+            ) : odViewMarketRows.map((r, i) => (
+              <tr key={i} className={r.aln === hostAirline ? "odv-host-row" : ""}>
+                <td><strong style={{ color: r.aln === hostAirline ? "var(--accent-light)" : "var(--text-primary)" }}>{r.aln}</strong>{r.aln === hostAirline ? <span className="odv-host-badge">HOST</span> : null}</td>
+                <td>{r.nstops}</td><td>{r.cncts}</td>
+                <td>{formatNumber(r.demand, 1)}</td>
+                <td>
+                  <div className="odv-share-cell">
+                    <div className="odv-share-bar" style={{ width: `${Math.min(r.demandShare, 100)}%`, background: r.aln === hostAirline ? "var(--accent)" : "var(--border-color)" }} />
+                    <span>{formatPct(r.demandShare, 1)}</span>
+                  </div>
+                </td>
+                <td>{formatNumber(r.traffic, 1)}</td>
+                <td>
+                  <div className="odv-share-cell">
+                    <div className="odv-share-bar" style={{ width: `${Math.min(r.trafficShare, 100)}%`, background: r.aln === hostAirline ? "var(--accent)" : "var(--border-color)" }} />
+                    <span>{formatPct(r.trafficShare, 1)}</span>
+                  </div>
+                </td>
+                <td>{formatNumber(r.revenue, 0)}</td>
+                <td>
+                  <div className="odv-share-cell">
+                    <div className="odv-share-bar" style={{ width: `${Math.min(r.revenueShare, 100)}%`, background: r.aln === hostAirline ? "var(--success)" : "var(--border-color)" }} />
+                    <span>{formatPct(r.revenueShare, 1)}</span>
+                  </div>
+                </td>
+                <td>{formatNumber(r.avgFare, 0)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    {/* Itinerary Table */}
+    <div className="odv-section">
+      <div className="odv-section-head">
+        <h3>Itineraries — {selectedOd}</h3>
+        <p>All itineraries in this market including connections · click row for detail</p>
+      </div>
+      <div className="table-shell">
+        <table>
+          <thead>
+            <tr>
+              <th>Airline</th>
+              <th>Flt (Seg1)</th><th>Cnct Pt 1</th><th>Flt (Seg2)</th><th>Cnct Pt 2</th><th>Flt (Seg3)</th>
+              <th>Stops</th><th>Freq</th><th>Dept</th><th>Arvl</th><th>Elap</th>
+              <th>Demand</th><th>Traffic</th><th>Revenue</th>
+            </tr>
+          </thead>
+          <tbody>
+            {itineraryRows.length === 0 ? (
+              <tr><td colSpan={14} style={{ textAlign: "center", padding: "24px", color: "var(--text-secondary)", fontStyle: "italic" }}>No itinerary data for this OD.</td></tr>
+            ) : itineraryRows.map((r, i) => {
+              const aln = String(r["Flt Desg (Seg1)"] || "").trim().split(/\s+/)[0] || "?";
+              const isHost = aln === hostAirline;
+              return (
+                <tr key={i} className={`${Number(r["Stops"] || 0) > 0 ? "itin-connecting" : ""} ${isHost ? "odv-host-row" : ""}`}>
+                  <td><strong style={{ color: isHost ? "var(--accent-light)" : "var(--text-primary)" }}>{aln}</strong></td>
+                  <td>{r["Flt Desg (Seg1)"]}</td>
+                  <td>{r["Connect Point 1"] === "*" ? "—" : r["Connect Point 1"] || "—"}</td>
+                  <td>{r["Flt Desg (Seg2)"] === "*" ? "—" : r["Flt Desg (Seg2)"] || "—"}</td>
+                  <td>{r["Connect Point 2"] === "*" ? "—" : r["Connect Point 2"] || "—"}</td>
+                  <td>{r["Flt Desg (Seg3)"] === "*" ? "—" : r["Flt Desg (Seg3)"] || "—"}</td>
+                  <td>{r["Stops"]}</td>
+                  <td className="mono">{r["Freq"]}</td>
+                  <td>{r["Dept Time"]}</td><td>{r["Arvl Time"]}</td><td>{r["Elap Time"]}</td>
+                  <td>{formatNumber(r["Total Demand"], 1)}</td>
+                  <td>{formatNumber(r["Total Traffic"], 1)}</td>
+                  <td>{formatNumber(r["Pax Revenue($)"], 0)}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+) : null}
         </section>
       </main>
       {networkClickedOd ? (
