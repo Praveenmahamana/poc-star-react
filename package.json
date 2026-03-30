@@ -8,6 +8,7 @@
     "dev": "npm run serve:dist",
     "build": "npm run sync-data && vite build",
     "export:network": "node scripts/export-network-html.mjs",
+    "export:dashboard": "node scripts/export-dashboard-html.mjs",
     "preview": "npm run serve:dist",
     "serve:dist": "node scripts/serve-dist.mjs",
     "rebuild:stable": "npm run build && npm run serve:dist",

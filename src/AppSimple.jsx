@@ -1007,52 +1007,6 @@ export default function AppSimple() {
       </div>
     </div>
 
-    {/* Flow OD Detail Panel (shown when a host flight is clicked) */}
-    {fvSelectedFlight?.isHost ? (
-      <div className="fv-detail-panel">
-        <div className="fv-detail-head">
-          <h4>{hostAirline} {fvSelectedFlight.flightNumber} — Flow OD Breakdown <span className="fv-detail-od">({fvSelectedFlight.orig} → {fvSelectedFlight.dest})</span></h4>
-          <p>Connecting passengers and revenue flowing through this flight from other origin markets</p>
-        </div>
-        <div className="fv-detail-stats">
-          <div className="fv-ds"><span>Total Spill Pax</span><strong>{formatNumber(fvSelectedFlight.totalPax, 1)}</strong></div>
-          <div className="fv-ds"><span>Local Pax</span><strong>{formatNumber(fvSelectedFlight.localPax, 1)}</strong></div>
-          <div className="fv-ds"><span>Flow Pax</span><strong>{formatNumber(fvSelectedFlight.flowPax, 1)}</strong></div>
-          <div className="fv-ds"><span>Flow %</span><strong>{fvSelectedFlight.totalPax > 0 ? formatPct((fvSelectedFlight.flowPax / fvSelectedFlight.totalPax) * 100, 1) : "—"}</strong></div>
-          <div className="fv-ds"><span>Total Revenue</span><strong>{formatNumber(fvSelectedFlight.revenue, 0)}</strong></div>
-        </div>
-        {fvFlowRows.length > 0 ? (
-          <Table
-            columns={[
-              { key: "label", label: "Flow OD", render: (v) => <strong>{v}</strong> },
-              { key: "flow_orig", label: "Flow Orig" },
-              { key: "flow_dest", label: "Flow Dest" },
-              { key: "flow_pax_est", label: "Flow Pax", render: (v) => formatNumber(v, 1) },
-              { key: "flow_revenue_est", label: "Flow Revenue", render: (v) => formatNumber(v, 0) },
-            ]}
-            rows={fvFlowRows}
-            emptyMessage="No flow OD data found."
-          />
-        ) : (
-          <div className="empty-state">No flow OD contributors for this flight.</div>
-        )}
-      </div>
-    ) : fvSelectedFlight && !fvSelectedFlight.isHost ? (
-      <div className="fv-detail-panel">
-        <div className="fv-detail-head">
-          <h4>{fvSelectedFlight.flightNumber} — Flight Details <span className="fv-detail-od">({fvSelectedFlight.orig} → {fvSelectedFlight.dest})</span></h4>
-          <p>Competitor flight operational metrics from the flight report</p>
-        </div>
-        <div className="fv-detail-stats">
-          <div className="fv-ds"><span>Weekly Deps</span><strong>{formatNumber(fvSelectedFlight.weeklyDeps, 0)}</strong></div>
-          <div className="fv-ds"><span>A/C Type</span><strong>{fvSelectedFlight.equipment || "—"}</strong></div>
-          <div className="fv-ds"><span>Seats/Dep</span><strong>{formatNumber(fvSelectedFlight.seatsPerDep, 0)}</strong></div>
-          <div className="fv-ds"><span>Observed Pax</span><strong>{formatNumber(fvSelectedFlight.observedPax, 1)}</strong></div>
-          <div className="fv-ds"><span>Load Factor</span><strong>{formatPct(fvSelectedFlight.loadFactor, 1)}</strong></div>
-          <div className="fv-ds"><span>Revenue</span><strong>{formatNumber(fvSelectedFlight.revenue, 0)}</strong></div>
-        </div>
-      </div>
-    ) : null}
   </div>
 ) : null}
 
@@ -1205,6 +1159,67 @@ export default function AppSimple() {
           hostAirline={hostAirline}
           onClose={() => setNetworkClickedOd(null)}
         />
+      ) : null}
+
+      {fvSelectedFlight ? (
+        <div className="fv-modal-backdrop" onClick={() => setSelectedFlightKey(null)}>
+          <div className="fv-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="od-modal-header">
+              <div>
+                <h3>
+                  {fvSelectedFlight.isHost
+                    ? `${hostAirline} ${fvSelectedFlight.flightNumber} — Flow OD Breakdown`
+                    : `${fvSelectedFlight.flightNumber} — Flight Details`}
+                </h3>
+                <p>
+                  {fvSelectedFlight.orig} → {fvSelectedFlight.dest} ·{" "}
+                  {fvSelectedFlight.isHost ? "Host flight · local & flow pax breakdown" : "Competitor flight · operational metrics"}
+                </p>
+              </div>
+              <button className="od-close-btn" onClick={() => setSelectedFlightKey(null)}>✕</button>
+            </div>
+            <div className="od-modal-body">
+              <div className="fv-detail-stats">
+                {fvSelectedFlight.isHost ? (
+                  <>
+                    <div className="fv-ds"><span>Total Spill Pax</span><strong>{formatNumber(fvSelectedFlight.totalPax, 1)}</strong></div>
+                    <div className="fv-ds"><span>Local Pax</span><strong>{formatNumber(fvSelectedFlight.localPax, 1)}</strong></div>
+                    <div className="fv-ds"><span>Flow Pax</span><strong>{formatNumber(fvSelectedFlight.flowPax, 1)}</strong></div>
+                    <div className="fv-ds"><span>Flow %</span><strong>{fvSelectedFlight.totalPax > 0 ? formatPct((fvSelectedFlight.flowPax / fvSelectedFlight.totalPax) * 100, 1) : "—"}</strong></div>
+                    <div className="fv-ds"><span>Load Factor</span><strong>{formatPct(fvSelectedFlight.loadFactor, 1)}</strong></div>
+                    <div className="fv-ds"><span>Revenue</span><strong>{formatNumber(fvSelectedFlight.revenue, 0)}</strong></div>
+                  </>
+                ) : (
+                  <>
+                    <div className="fv-ds"><span>Weekly Deps</span><strong>{formatNumber(fvSelectedFlight.weeklyDeps, 0)}</strong></div>
+                    <div className="fv-ds"><span>A/C Type</span><strong>{fvSelectedFlight.equipment || "—"}</strong></div>
+                    <div className="fv-ds"><span>Seats/Dep</span><strong>{formatNumber(fvSelectedFlight.seatsPerDep, 0)}</strong></div>
+                    <div className="fv-ds"><span>Observed Pax</span><strong>{formatNumber(fvSelectedFlight.observedPax, 1)}</strong></div>
+                    <div className="fv-ds"><span>Load Factor</span><strong>{formatPct(fvSelectedFlight.loadFactor, 1)}</strong></div>
+                    <div className="fv-ds"><span>Revenue</span><strong>{formatNumber(fvSelectedFlight.revenue, 0)}</strong></div>
+                  </>
+                )}
+              </div>
+              {fvSelectedFlight.isHost ? (
+                fvFlowRows.length > 0 ? (
+                  <Table
+                    columns={[
+                      { key: "label", label: "Flow OD", render: (v) => <strong>{v}</strong> },
+                      { key: "flow_orig", label: "Flow Orig" },
+                      { key: "flow_dest", label: "Flow Dest" },
+                      { key: "flow_pax_est", label: "Flow Pax", render: (v) => formatNumber(v, 1) },
+                      { key: "flow_revenue_est", label: "Flow Revenue", render: (v) => formatNumber(v, 0) },
+                    ]}
+                    rows={fvFlowRows}
+                    emptyMessage="No flow OD data found."
+                  />
+                ) : (
+                  <div className="empty-state">No flow OD contributors for this flight.</div>
+                )
+              ) : null}
+            </div>
+          </div>
+        </div>
       ) : null}
     </div>
   );
