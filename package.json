@@ -1,0 +1,23 @@
+{
+  "name": "insightsdb-dashboard",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "sync-data": "node scripts/sync-data.mjs",
+    "dev": "npm run serve:dist",
+    "build": "npm run sync-data && vite build",
+    "export:network": "node scripts/export-network-html.mjs",
+    "preview": "npm run serve:dist",
+    "serve:dist": "node scripts/serve-dist.mjs",
+    "rebuild:stable": "npm run build && npm run serve:dist",
+    "start:stable": "npm run serve:dist"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "vite": "^5.4.19"
+  }
+}

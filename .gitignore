@@ -1,0 +1,9 @@
+node_modules/
+dist/
+build.out.log
+build.err.log
+src/generated/dashboard_bundle.json
+public/data/
+*.local
+.DS_Store
+Thumbs.db
