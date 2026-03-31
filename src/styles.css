@@ -2289,6 +2289,16 @@ input[type=range] {
 .odv-section-head p { margin: 0; font-size: 0.73rem; color: var(--text-secondary); }
 
 .odv-host-row td { background: rgba(32, 101, 209, 0.04) !important; }
+.odv-table-shell {
+  max-height: 420px;
+  overflow: auto;
+}
+.odv-table-shell thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--bg-card);
+}
 .odv-host-badge {
   display: inline-block;
   margin-left: 6px;

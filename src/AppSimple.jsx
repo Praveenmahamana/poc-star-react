@@ -4,9 +4,9 @@ import sqlWasmUrl from "sql.js/dist/sql-wasm.wasm?url";
 import initialBundle from "./generated/dashboard_bundle.json";
 
 const tabs = [
-  { id: "summary", label: "Network" },
-  { id: "flightView", label: "Flight View" },
-  { id: "odView", label: "O&D View" },
+  { id: "summary", label: "Network", icon: "🌐" },
+  { id: "flightView", label: "Flight View", icon: "✈️" },
+  { id: "odView", label: "O&D View", icon: "🧭" },
 ];
 
 function formatNumber(value, digits = 0) {
@@ -112,6 +112,30 @@ function NetworkScorecard({ hostPax, hostSeats, avgLoadFactor, totalLocalPax, to
           <SplitBar localPct={localRevPct} flowPct={flowRevPct} />
         </div>
       </div>
+    </div>
+  );
+}
+
+function SidebarKpis({ hostAirline, hostPax, hostSeats, avgLoadFactor, totalLocalPax, totalFlowPax, totalLocalRevenue, totalFlowRevenue }) {
+  const cards = [
+    { label: "Weekly Pax", value: formatNumber(hostPax, 0), tone: "blue" },
+    { label: "Weekly Seats", value: formatNumber(hostSeats, 0), tone: "teal" },
+    { label: "Load Factor", value: formatPct(avgLoadFactor, 1), tone: "amber" },
+    { label: "Local/Flow Pax", value: `${formatNumber(totalLocalPax, 0)} / ${formatNumber(totalFlowPax, 0)}`, tone: "indigo" },
+    { label: "Local/Flow Revenue", value: `${formatNumber(totalLocalRevenue, 0)} / ${formatNumber(totalFlowRevenue, 0)}`, tone: "slate" },
+  ];
+  return (
+    <div className="sidebar-kpi-wrap">
+      <div className="eyebrow">KPI Snapshot</div>
+      <div className="sidebar-kpi-grid">
+        {cards.map((card) => (
+          <div key={card.label} className={`sidebar-kpi-card ${card.tone}`}>
+            <div className="sidebar-kpi-label">{card.label}</div>
+            <div className="sidebar-kpi-value">{card.value}</div>
+          </div>
+        ))}
+      </div>
+      <div className="sidebar-kpi-note">{hostAirline || "Host"} network aggregate</div>
     </div>
   );
 }
@@ -1151,35 +1175,26 @@ export default function AppSimple() {
     <div className="app-shell app-shell-vision">
       <aside className="sidebar">
         <div className="sidebar-brand"><div><div className="eyebrow">Airline Insights</div><strong>{hostAirline || "—"}</strong></div></div>
-        <nav className="tabs sidebar-tabs">
-          {tabs.map((tab) => <button key={tab.id} className={tab.id === activeTab ? "tab active" : "tab"} onClick={() => setActiveTab(tab.id)}><span>{tab.label}</span></button>)}
-        </nav>
-      </aside>
-      <main className="main-shell">
-        <header className="topbar">
-          <div><div className="eyebrow">Command view</div><h1>{tabs.find((tab) => tab.id === activeTab)?.label}{worksetLoading ? <span className="workset-loading-badge">Loading…</span> : null}</h1></div>
-          <div className="topbar-controls">
-            {worksets.length > 1 ? (
-              <div className="selector-wrap">
-                <label htmlFor="workset-selector">Workset</label>
-                <select id="workset-selector" value={worksetId} onChange={(e) => { setWorksetId(e.target.value); setNetworkClickedOd(null); }}>
-                  {worksets.map((w) => <option key={w.id} value={w.id}>{w.label}</option>)}
-                </select>
-              </div>
-            ) : null}
-            {activeTab === "odView" ? (
-              <div className="selector-wrap topbar-selector">
-                <label htmlFor="od-selector">Selected OD</label>
-                <select id="od-selector" value={selectedOd} onChange={(event) => setSelectedOd(event.target.value)}>
-                  {!odOptions.length ? <option value="">No ODs available</option> : null}
-                  {odOptions.map((od) => <option key={od} value={od}>{od}</option>)}
-                </select>
-              </div>
-            ) : null}
+        <div className="sidebar-selectors">
+          {worksets.length > 1 ? (
+            <div className="selector-wrap">
+              <label htmlFor="workset-selector">Workset</label>
+              <select id="workset-selector" value={worksetId} onChange={(e) => { setWorksetId(e.target.value); setNetworkClickedOd(null); }}>
+                {worksets.map((w) => <option key={w.id} value={w.id}>{w.label}</option>)}
+              </select>
+            </div>
+          ) : null}
+          <div className="selector-wrap">
+            <label htmlFor="od-selector">Selected OD</label>
+            <select id="od-selector" value={selectedOd} onChange={(event) => setSelectedOd(event.target.value)}>
+              {!odOptions.length ? <option value="">No ODs available</option> : null}
+              {odOptions.map((od) => <option key={od} value={od}>{od}</option>)}
+            </select>
           </div>
-        </header>
-
-        <NetworkScorecard
+        </div>
+        <div className="sidebar-divider" />
+        <SidebarKpis
+          hostAirline={hostAirline}
           hostPax={hostPax}
           hostSeats={hostSeats}
           avgLoadFactor={avgLoadFactor}
@@ -1188,7 +1203,20 @@ export default function AppSimple() {
           totalLocalRevenue={totalLocalRevenue}
           totalFlowRevenue={totalFlowRevenue}
         />
-
+      </aside>
+      <main className="main-shell">
+        <div className="folder-tabs">
+          {tabs.map((tab) => (
+            <button
+              key={tab.id}
+              className={tab.id === activeTab ? "folder-tab active" : "folder-tab"}
+              onClick={() => setActiveTab(tab.id)}
+            >
+              <span className="folder-tab-icon" aria-hidden="true">{tab.icon}</span>
+              <span>{tab.label}</span>
+            </button>
+          ))}
+        </div>
         <section className="panel panel-vision">
           {activeTab === "summary" ? <div className="tab-content">
             {reportStatus === "loading" ? <div className="loading">Loading selected OD report data…</div> : null}
@@ -1414,7 +1442,7 @@ export default function AppSimple() {
         <h3>Market Report — {selectedOd}</h3>
         <p>Competitive share breakdown by carrier · Pax itinerary view</p>
       </div>
-      <div className="table-shell">
+      <div className="table-shell odv-table-shell">
         <table>
           <thead>
             <tr>
@@ -1468,7 +1496,7 @@ export default function AppSimple() {
         <h3>Itineraries — {selectedOd}</h3>
         <p>All itineraries in this market including connections · click row for detail</p>
       </div>
-      <div className="table-shell">
+      <div className="table-shell odv-table-shell">
         <table>
           <thead>
             <tr>
