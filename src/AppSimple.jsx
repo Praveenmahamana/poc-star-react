@@ -1,4 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
+import initSqlJs from "sql.js";
+import sqlWasmUrl from "sql.js/dist/sql-wasm.wasm?url";
 import initialBundle from "./generated/dashboard_bundle.json";
 
 const tabs = [
@@ -16,17 +18,8 @@ function formatPct(value, digits = 1) {
   return `${formatNumber(value, digits)}%`;
 }
 
-function parseClockToMinutes(value) {
-  const text = String(value || "").trim();
-  if (!/^\d{2}:\d{2}$/.test(text)) return null;
-  const [hours, mins] = text.split(":").map(Number);
-  return hours * 60 + mins;
-}
-
-function computeSlack(actual, minimum) {
-  const actualMinutes = parseClockToMinutes(actual);
-  const minimumMinutes = parseClockToMinutes(minimum);
-  return actualMinutes !== null && minimumMinutes !== null ? actualMinutes - minimumMinutes : null;
+function normalizeCode(value) {
+  return String(value || "").trim().toUpperCase();
 }
 
 function fetchJson(path) {
@@ -36,34 +29,22 @@ function fetchJson(path) {
   });
 }
 
-function activeDaysFromFreq(freq) {
-  return String(freq || "").split("").map((char, index) => ({ char, index })).filter((item) => item.char !== ".").map((item) => item.index);
+function queryRowsFromSqlite(db, sql, params = []) {
+  if (!db) return [];
+  const stmt = db.prepare(sql);
+  stmt.bind(params);
+  const rows = [];
+  while (stmt.step()) {
+    const obj = stmt.getAsObject();
+    if (obj.row_json) rows.push(JSON.parse(obj.row_json));
+  }
+  stmt.free();
+  return rows;
 }
 
 function parseElapsedToMinutes(elap) {
   const parts = String(elap || "0:0").split(":").map(Number);
   return (parts[0] || 0) * 60 + (parts[1] || 0);
-}
-
-function timeBucketLabel(hhmm) {
-  const text = String(hhmm || "");
-  const hour = Number(text.split(":")[0] || 0);
-  if (hour < 4) return "00-03";
-  if (hour < 8) return "04-07";
-  if (hour < 12) return "08-11";
-  if (hour < 16) return "12-15";
-  if (hour < 20) return "16-19";
-  return "20-23";
-}
-
-function Tile({ label, value, sub, accent = false }) {
-  return (
-    <div className={`tile ${accent ? "tile-accent" : ""}`}>
-      <div className="tile-label">{label}</div>
-      <div className="tile-value">{value}</div>
-      <div className="tile-subtext">{sub}</div>
-    </div>
-  );
 }
 
 function SplitBar({ localPct, flowPct }) {
@@ -83,11 +64,7 @@ function SplitBar({ localPct, flowPct }) {
   );
 }
 
-function SectionHeading({ title, subtitle }) {
-  return <div className="section-heading"><div><h2>{title}</h2><p>{subtitle}</p></div></div>;
-}
-
-function NetworkScorecard({ hostAirline, hostPax, hostSeats, avgLoadFactor, totalLocalPax, totalFlowPax, totalLocalRevenue, totalFlowRevenue }) {
+function NetworkScorecard({ hostPax, hostSeats, avgLoadFactor, totalLocalPax, totalFlowPax, totalLocalRevenue, totalFlowRevenue }) {
   const totalPax = (totalLocalPax + totalFlowPax) || 1;
   const totalRev = (totalLocalRevenue + totalFlowRevenue) || 1;
   const localPaxPct = (totalLocalPax / totalPax) * 100;
@@ -170,9 +147,27 @@ function PieChart({ slices, size = 180 }) {
   const total = slices.reduce((s, x) => s + x.value, 0);
   if (!total) return <div className="empty-state" style={{ padding: "24px" }}>No data available</div>;
   const cx = size / 2, cy = size / 2, r = size * 0.42;
+  const positiveSlices = slices.filter((s) => Number(s.value || 0) > 0);
+  if (positiveSlices.length === 1) {
+    const only = positiveSlices[0];
+    const full = { ...only, pct: 100, color: PIE_COLORS[0] };
+    return (
+      <div className="pie-wrap">
+        <svg viewBox={`0 0 ${size} ${size}`} width={size} height={size}>
+          <circle cx={cx} cy={cy} r={r} fill={full.color} stroke="#fff" strokeWidth="1.5" />
+        </svg>
+        <div className="pie-legend">
+          <div className="pie-legend-item">
+            <span className="pie-dot" style={{ background: full.color }} />
+            <span className="pie-label">{full.label}</span>
+            <span className="pie-pct">{formatPct(full.pct, 1)}</span>
+          </div>
+        </div>
+      </div>
+    );
+  }
   let angle = -Math.PI / 2;
-  const paths = slices
-    .filter((s) => s.value > 0)
+  const paths = positiveSlices
     .map((slice, i) => {
       const frac = slice.value / total;
       const start = angle;
@@ -202,6 +197,31 @@ function PieChart({ slices, size = 180 }) {
 
 function countFreqDays(freq) {
   return String(freq || "").split("").filter((c) => c !== ".").length;
+}
+
+function safeRatio(num, den) {
+  return den > 0 ? num / den : 0;
+}
+
+function MixFusion({ demandLocalPct, demandFlowPct, revenueLocalPct, revenueFlowPct }) {
+  return (
+    <div className="mix-fusion">
+      <div className="mix-fusion-row">
+        <span>D</span>
+        <div className="mix-fusion-track">
+          <div className="mix-fusion-local" style={{ width: `${Math.max(0, Number(demandLocalPct || 0))}%` }} />
+          <div className="mix-fusion-flow" style={{ width: `${Math.max(0, Number(demandFlowPct || 0))}%` }} />
+        </div>
+      </div>
+      <div className="mix-fusion-row">
+        <span>R</span>
+        <div className="mix-fusion-track">
+          <div className="mix-fusion-local" style={{ width: `${Math.max(0, Number(revenueLocalPct || 0))}%` }} />
+          <div className="mix-fusion-flow" style={{ width: `${Math.max(0, Number(revenueFlowPct || 0))}%` }} />
+        </div>
+      </div>
+    </div>
+  );
 }
 
 const QSI_METRICS = [
@@ -563,7 +583,7 @@ function OdDetailPanel({ od, odRow, flightRows, itineraryRows, status, onClose, 
 
 export default function AppSimple() {
   const [activeTab, setActiveTab] = useState("summary");
-  const [selectedOd, setSelectedOd] = useState("BLR-KLH");
+  const [selectedOd, setSelectedOd] = useState("");
   const [flightReportRows, setFlightReportRows] = useState([]);
   const [itineraryRows, setItineraryRows] = useState([]);
   const [reportStatus, setReportStatus] = useState("loading");
@@ -571,6 +591,8 @@ export default function AppSimple() {
   const [odDetailFlightRows, setOdDetailFlightRows] = useState([]);
   const [odDetailItineraryRows, setOdDetailItineraryRows] = useState([]);
   const [odDetailStatus, setOdDetailStatus] = useState("idle");
+  const [networkOrigFilter, setNetworkOrigFilter] = useState("");
+  const [networkDestFilter, setNetworkDestFilter] = useState("");
 
   // Flight View state
   const [fvOrig, setFvOrig] = useState("");
@@ -580,22 +602,53 @@ export default function AppSimple() {
   const [fvCompFlightRows, setFvCompFlightRows] = useState([]);
 
   // Workset state
-  const defaultWorksetId = initialBundle?.profile?.workset || "WORKSET12061";
+  const defaultWorksetId = initialBundle?.profile?.workset || "";
   const [bundle, setBundle] = useState(initialBundle);
-  const [worksets, setWorksets] = useState([{ id: defaultWorksetId, label: defaultWorksetId }]);
+  const [worksets, setWorksets] = useState(defaultWorksetId ? [{ id: defaultWorksetId, label: defaultWorksetId }] : []);
   const [worksetId, setWorksetId] = useState(defaultWorksetId);
   const [worksetLoading, setWorksetLoading] = useState(false);
+  const [sqliteDb, setSqliteDb] = useState(null);
 
   // Load worksets index once
   useEffect(() => {
     fetchJson("/data/worksets/index.json")
-      .then((data) => { if (Array.isArray(data) && data.length) setWorksets(data); })
+      .then((data) => {
+        if (!Array.isArray(data) || !data.length) return;
+        setWorksets(data);
+        setWorksetId((prev) => (prev && data.some((w) => w.id === prev) ? prev : data[0].id));
+      })
       .catch(() => { /* keep default */ });
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    let dbInstance = null;
+
+    Promise.all([
+      initSqlJs({ locateFile: () => sqlWasmUrl }),
+      fetch("/data/worksets/dashboard.sqlite").then((response) => {
+        if (!response.ok) throw new Error("Failed to load dashboard.sqlite");
+        return response.arrayBuffer();
+      }),
+    ])
+      .then(([SQL, buffer]) => {
+        dbInstance = new SQL.Database(new Uint8Array(buffer));
+        if (active) setSqliteDb(dbInstance);
+      })
+      .catch(() => {
+        if (active) setSqliteDb(null);
+      });
+
+    return () => {
+      active = false;
+      if (dbInstance) dbInstance.close();
+    };
   }, []);
 
   // When workset changes, load bundle
   useEffect(() => {
-    if (worksetId === defaultWorksetId) {
+    if (!worksetId) return;
+    if (worksetId === defaultWorksetId && initialBundle?.profile?.workset) {
       setBundle(initialBundle);
     } else {
       setWorksetLoading(true);
@@ -605,13 +658,38 @@ export default function AppSimple() {
     }
   }, [worksetId]);
 
+  useEffect(() => {
+    setFvOrig("");
+    setFvDest("");
+    setFvAirlineFilter("all");
+    setSelectedFlightKey(null);
+    setFvCompFlightRows([]);
+    setNetworkOrigFilter("");
+    setNetworkDestFilter("");
+    setNetworkClickedOd(null);
+  }, [worksetId]);
+
   const dataBasePath = `/data/worksets/${worksetId}`;
 
   const odOptions = useMemo(() => (bundle?.level1_host_od_summary || []).map((row) => `${row.orig}-${row.dest}`), [bundle]);
+
+  useEffect(() => {
+    if (!odOptions.length) {
+      if (selectedOd) setSelectedOd("");
+      return;
+    }
+    if (!selectedOd || !odOptions.includes(selectedOd)) {
+      setSelectedOd(odOptions[0]);
+    }
+  }, [odOptions, selectedOd]);
+
   const hostPax = (bundle?.level1_host_od_summary || []).reduce((sum, row) => sum + Number(row.weekly_pax_est || 0), 0);
   const hostSeats = (bundle?.level1_host_od_summary || []).reduce((sum, row) => sum + Number(row.weekly_seats_est || 0), 0);
   const avgLoadFactor = hostSeats ? (hostPax / hostSeats) * 100 : 0;
   const odNetworkRows = useMemo(() => {
+    const level1ByOd = new Map(
+      (bundle?.level1_host_od_summary || []).map((row) => [`${row.orig}-${row.dest}`, row]),
+    );
     const grouped = new Map();
     for (const row of bundle?.level3_host_flight_summary || []) {
       const key = `${row.orig}-${row.dest}`;
@@ -639,10 +717,18 @@ export default function AppSimple() {
       grouped.set(key, current);
     }
     const rows = [...grouped.values()].map((row) => {
+      const level1 = level1ByOd.get(row.od);
       const demandDenominator = row.totalPax || row.localPax + row.flowPax || 1;
       const revDenominator = row.totalRevenue || row.localRevenue + row.flowRevenue || 1;
       return {
         ...row,
+        weeklyPax: Number(level1?.weekly_pax_est || row.totalPax || 0),
+        weeklySeats: Number(level1?.weekly_seats_est || 0),
+        loadFactorPct: Number(level1?.load_factor_pct_est || 0),
+        absPaxDiffPct: Number(level1?.abs_total_pax_diff_pct_est || 0),
+        absPlfDiffPct: Number(level1?.abs_plf_diff_pct_est || 0),
+        flowPddPct: Number(level1?.flow_pdd_pct_est || 0),
+        flowApmPct: Number(level1?.flow_apm_pct_est || 0),
         localDemandPct: (row.localPax / demandDenominator) * 100,
         flowDemandPct: (row.flowPax / demandDenominator) * 100,
         localRevenuePct: (row.localRevenue / revDenominator) * 100,
@@ -652,26 +738,121 @@ export default function AppSimple() {
     rows.sort((left, right) => right.totalRevenue - left.totalRevenue);
     return rows;
   }, [bundle]);
-  const totalLocalPax = odNetworkRows.reduce((sum, row) => sum + row.localPax, 0);
-  const totalFlowPax = odNetworkRows.reduce((sum, row) => sum + row.flowPax, 0);
-  const totalLocalRevenue = odNetworkRows.reduce((sum, row) => sum + row.localRevenue, 0);
-  const totalFlowRevenue = odNetworkRows.reduce((sum, row) => sum + row.flowRevenue, 0);
+
+  const networkOrigOptions = useMemo(() => {
+    const items = networkDestFilter
+      ? odNetworkRows.filter((r) => normalizeCode(r.dest) === networkDestFilter)
+      : odNetworkRows;
+    return [...new Set(items.map((r) => normalizeCode(r.orig)))].sort();
+  }, [odNetworkRows, networkDestFilter]);
+
+  const networkDestOptions = useMemo(() => {
+    const items = networkOrigFilter
+      ? odNetworkRows.filter((r) => normalizeCode(r.orig) === networkOrigFilter)
+      : odNetworkRows;
+    return [...new Set(items.map((r) => normalizeCode(r.dest)))].sort();
+  }, [odNetworkRows, networkOrigFilter]);
 
   useEffect(() => {
+    if (networkOrigFilter && !networkOrigOptions.includes(networkOrigFilter)) setNetworkOrigFilter("");
+  }, [networkOrigFilter, networkOrigOptions]);
+
+  useEffect(() => {
+    if (networkDestFilter && !networkDestOptions.includes(networkDestFilter)) setNetworkDestFilter("");
+  }, [networkDestFilter, networkDestOptions]);
+
+  const odNetworkRowsFiltered = useMemo(
+    () =>
+      odNetworkRows.filter(
+        (r) =>
+          (!networkOrigFilter || normalizeCode(r.orig) === networkOrigFilter) &&
+          (!networkDestFilter || normalizeCode(r.dest) === networkDestFilter),
+      ),
+    [odNetworkRows, networkOrigFilter, networkDestFilter],
+  );
+
+  const networkNumericScales = useMemo(() => {
+    const keys = [
+      "weeklyDepartures",
+      "localPax",
+      "flowPax",
+      "flowPddPct",
+      "flowApmPct",
+      "absPaxDiffPct",
+      "absPlfDiffPct",
+      "localRevenue",
+      "flowRevenue",
+    ];
+    const scales = {};
+    for (const key of keys) {
+      const values = odNetworkRowsFiltered
+        .map((row) => Number(row[key]))
+        .filter((value) => Number.isFinite(value));
+      const max = values.length ? Math.max(...values.map((value) => Math.abs(value))) : 0;
+      scales[key] = { max };
+    }
+    return scales;
+  }, [odNetworkRowsFiltered]);
+
+  const renderNetworkNumericCell = (value, key, digits = 1, isPct = false) => {
+    const num = Number(value || 0);
+    const max = Number(networkNumericScales[key]?.max || 0);
+    const intensity = max > 0 ? Math.min(1, Math.abs(num) / max) : 0;
+    return (
+      <span className="fv-num-chip" style={{ "--fv-heat": intensity }}>
+        {isPct ? formatPct(num, digits) : formatNumber(num, digits)}
+      </span>
+    );
+  };
+
+  const totalLocalPax = odNetworkRowsFiltered.reduce((sum, row) => sum + row.localPax, 0);
+  const totalFlowPax = odNetworkRowsFiltered.reduce((sum, row) => sum + row.flowPax, 0);
+  const totalLocalRevenue = odNetworkRowsFiltered.reduce((sum, row) => sum + row.localRevenue, 0);
+  const totalFlowRevenue = odNetworkRowsFiltered.reduce((sum, row) => sum + row.flowRevenue, 0);
+
+  useEffect(() => {
+    if (!selectedOd) {
+      setFlightReportRows([]);
+      setItineraryRows([]);
+      setReportStatus("ready");
+      return;
+    }
     let cancelled = false;
     setReportStatus("loading");
-    Promise.all([
-      fetchJson(`${dataBasePath}/flight-report-db/${selectedOd}.json`).catch(() => []),
-      fetchJson(`${dataBasePath}/itinerary-report-db/${selectedOd}.json`).catch(() => []),
-    ]).then(([flightRowsData, itineraryRowsData]) => {
-      if (!cancelled) {
-        setFlightReportRows(flightRowsData);
-        setItineraryRows(itineraryRowsData);
-        setReportStatus("ready");
+    if (sqliteDb) {
+      try {
+        const flightRowsData = queryRowsFromSqlite(
+          sqliteDb,
+          "SELECT row_json FROM flight_report WHERE workset_id = ? AND od = ?",
+          [worksetId, selectedOd],
+        );
+        const itineraryRowsData = queryRowsFromSqlite(
+          sqliteDb,
+          "SELECT row_json FROM itinerary_report WHERE workset_id = ? AND od = ?",
+          [worksetId, selectedOd],
+        );
+        if (!cancelled) {
+          setFlightReportRows(flightRowsData);
+          setItineraryRows(itineraryRowsData);
+          setReportStatus("ready");
+        }
+      } catch {
+        if (!cancelled) setReportStatus("ready");
       }
-    });
+    } else {
+      Promise.all([
+        fetchJson(`${dataBasePath}/flight-report-db/${selectedOd}.json`).catch(() => []),
+        fetchJson(`${dataBasePath}/itinerary-report-db/${selectedOd}.json`).catch(() => []),
+      ]).then(([flightRowsData, itineraryRowsData]) => {
+        if (!cancelled) {
+          setFlightReportRows(flightRowsData);
+          setItineraryRows(itineraryRowsData);
+          setReportStatus("ready");
+        }
+      });
+    }
     return () => { cancelled = true; };
-  }, [selectedOd, dataBasePath]);
+  }, [selectedOd, dataBasePath, sqliteDb, worksetId]);
 
   useEffect(() => {
     if (!networkClickedOd) return;
@@ -679,18 +860,40 @@ export default function AppSimple() {
     setOdDetailStatus("loading");
     setOdDetailFlightRows([]);
     setOdDetailItineraryRows([]);
-    Promise.all([
-      fetchJson(`${dataBasePath}/flight-report-db/${networkClickedOd}.json`).catch(() => []),
-      fetchJson(`${dataBasePath}/itinerary-report-db/${networkClickedOd}.json`).catch(() => []),
-    ]).then(([flightData, itineraryData]) => {
-      if (!cancelled) {
-        setOdDetailFlightRows(flightData);
-        setOdDetailItineraryRows(itineraryData);
-        setOdDetailStatus("ready");
+    if (sqliteDb) {
+      try {
+        const flightData = queryRowsFromSqlite(
+          sqliteDb,
+          "SELECT row_json FROM flight_report WHERE workset_id = ? AND od = ?",
+          [worksetId, networkClickedOd],
+        );
+        const itineraryData = queryRowsFromSqlite(
+          sqliteDb,
+          "SELECT row_json FROM itinerary_report WHERE workset_id = ? AND od = ?",
+          [worksetId, networkClickedOd],
+        );
+        if (!cancelled) {
+          setOdDetailFlightRows(flightData);
+          setOdDetailItineraryRows(itineraryData);
+          setOdDetailStatus("ready");
+        }
+      } catch {
+        if (!cancelled) setOdDetailStatus("ready");
       }
-    });
+    } else {
+      Promise.all([
+        fetchJson(`${dataBasePath}/flight-report-db/${networkClickedOd}.json`).catch(() => []),
+        fetchJson(`${dataBasePath}/itinerary-report-db/${networkClickedOd}.json`).catch(() => []),
+      ]).then(([flightData, itineraryData]) => {
+        if (!cancelled) {
+          setOdDetailFlightRows(flightData);
+          setOdDetailItineraryRows(itineraryData);
+          setOdDetailStatus("ready");
+        }
+      });
+    }
     return () => { cancelled = true; };
-  }, [networkClickedOd]);
+  }, [networkClickedOd, dataBasePath, sqliteDb, worksetId]);
 
   const hostAirline = bundle?.profile?.host_airline || "";
   const networkClickedOdRow = networkClickedOd ? odNetworkRows.find((r) => r.od === networkClickedOd) ?? null : null;
@@ -700,36 +903,68 @@ export default function AppSimple() {
     if (!fvOrig || !fvDest) { setFvCompFlightRows([]); return; }
     const od = `${fvOrig}-${fvDest}`;
     let cancelled = false;
-    fetchJson(`${dataBasePath}/flight-report-db/${od}.json`)
-      .then((data) => { if (!cancelled) setFvCompFlightRows(data); })
-      .catch(() => { if (!cancelled) setFvCompFlightRows([]); });
+    if (sqliteDb) {
+      try {
+        const data = queryRowsFromSqlite(
+          sqliteDb,
+          "SELECT row_json FROM flight_report WHERE workset_id = ? AND od = ?",
+          [worksetId, od],
+        );
+        if (!cancelled) setFvCompFlightRows(data);
+      } catch {
+        if (!cancelled) setFvCompFlightRows([]);
+      }
+    } else {
+      fetchJson(`${dataBasePath}/flight-report-db/${od}.json`)
+        .then((data) => { if (!cancelled) setFvCompFlightRows(data); })
+        .catch(() => { if (!cancelled) setFvCompFlightRows([]); });
+    }
     return () => { cancelled = true; };
-  }, [fvOrig, fvDest, dataBasePath]);
+  }, [fvOrig, fvDest, dataBasePath, sqliteDb, worksetId]);
 
-  // Flight View: unique origins from all host flights
-  const fvOrigOptions = useMemo(() =>
-    [...new Set((bundle?.level3_host_flight_summary || []).map((r) => r.orig))].sort(),
-  [bundle]);
+  const fvRoutePairs = useMemo(
+    () => (bundle?.level3_host_flight_summary || []).map((r) => ({ orig: normalizeCode(r.orig), dest: normalizeCode(r.dest) })),
+    [bundle],
+  );
 
-  // Flight View: destinations filtered by selected origin
+  // Flight View: origins filtered by selected destination (bidirectional filtering)
+  const fvOrigOptions = useMemo(() => {
+    const origins = fvDest
+      ? [...new Set(fvRoutePairs.filter((r) => r.dest === fvDest).map((r) => r.orig))]
+      : [...new Set(fvRoutePairs.map((r) => r.orig))];
+    return origins.sort();
+  }, [fvRoutePairs, fvDest]);
+
+  // Flight View: destinations filtered by selected origin (bidirectional filtering)
   const fvDestOptions = useMemo(() => {
-    const all = bundle?.level3_host_flight_summary || [];
     const dests = fvOrig
-      ? [...new Set(all.filter((r) => r.orig === fvOrig).map((r) => r.dest))]
-      : [...new Set(all.map((r) => r.dest))];
+      ? [...new Set(fvRoutePairs.filter((r) => r.orig === fvOrig).map((r) => r.dest))]
+      : [...new Set(fvRoutePairs.map((r) => r.dest))];
     return dests.sort();
-  }, [bundle, fvOrig]);
+  }, [fvRoutePairs, fvOrig]);
+
+  useEffect(() => {
+    if (fvOrig && !fvOrigOptions.includes(fvOrig)) setFvOrig("");
+  }, [fvOrig, fvOrigOptions]);
+
+  useEffect(() => {
+    if (fvDest && !fvDestOptions.includes(fvDest)) setFvDest("");
+  }, [fvDest, fvDestOptions]);
 
   // Flight View: host flights (from bundle, filtered)
   const fvHostFlights = useMemo(() =>
     (bundle?.level3_host_flight_summary || [])
-      .filter((r) => (!fvOrig || r.orig === fvOrig) && (!fvDest || r.dest === fvDest))
+      .filter((r) => {
+        const orig = normalizeCode(r.orig);
+        const dest = normalizeCode(r.dest);
+        return (!fvOrig || orig === fvOrig) && (!fvDest || dest === fvDest);
+      })
       .map((r) => ({
         isHost: true,
         key: `${hostAirline}-${r.flight_number}-${r.orig}-${r.dest}`,
         airline: hostAirline,
         flightNumber: r.flight_number,
-        orig: r.orig, dest: r.dest,
+        orig: normalizeCode(r.orig), dest: normalizeCode(r.dest),
         freq: null,
         weeklyDeps: r.weekly_departures,
         equipment: r.equipment,
@@ -757,7 +992,7 @@ export default function AppSimple() {
         key: `comp-${r["Flt Desg"]}-${r["Dept Sta"]}-${r["Arvl Sta"]}`,
         airline: String(r["Flt Desg"] || "").trim().split(" ")[0],
         flightNumber: String(r["Flt Desg"] || "").trim(),
-        orig: r["Dept Sta"], dest: r["Arvl Sta"],
+        orig: normalizeCode(r["Dept Sta"]), dest: normalizeCode(r["Arvl Sta"]),
         freq: r["Freq"],
         weeklyDeps: countFreqDays(r["Freq"]),
         equipment: r["Subfleet"],
@@ -776,12 +1011,74 @@ export default function AppSimple() {
     let result = [];
     if (fvAirlineFilter !== "competitors") result = [...fvHostFlights];
     if (fvAirlineFilter !== "host") result = [...result, ...fvCompFlights];
+    result = result.filter((f) => (!fvOrig || f.orig === fvOrig) && (!fvDest || f.dest === fvDest));
     return result.sort((a, b) => {
       if (a.isHost && !b.isHost) return -1;
       if (!a.isHost && b.isHost) return 1;
       return (a.orig + a.dest + a.flightNumber).localeCompare(b.orig + b.dest + b.flightNumber);
     });
-  }, [fvHostFlights, fvCompFlights, fvAirlineFilter]);
+  }, [fvHostFlights, fvCompFlights, fvAirlineFilter, fvOrig, fvDest]);
+
+  const fvHostRows = useMemo(() => fvFilteredFlights.filter((f) => f.isHost), [fvFilteredFlights]);
+  const fvCompRows = useMemo(() => fvFilteredFlights.filter((f) => !f.isHost), [fvFilteredFlights]);
+
+  const fvKpiCards = useMemo(() => {
+    const hostFlights = fvHostRows.length;
+    const compFlights = fvCompRows.length;
+    const hostObservedPax = fvHostRows.reduce((sum, f) => sum + Number(f.observedPax || 0), 0);
+    const compObservedPax = fvCompRows.reduce((sum, f) => sum + Number(f.observedPax || 0), 0);
+    const hostRevenue = fvHostRows.reduce((sum, f) => sum + Number(f.revenue || 0), 0);
+    const compRevenue = fvCompRows.reduce((sum, f) => sum + Number(f.revenue || 0), 0);
+    const hostLfAvg = fvHostRows.length ? fvHostRows.reduce((sum, f) => sum + Number(f.loadFactor || 0), 0) / fvHostRows.length : 0;
+    const compLfAvg = fvCompRows.length ? fvCompRows.reduce((sum, f) => sum + Number(f.loadFactor || 0), 0) / fvCompRows.length : 0;
+    const hostFareAvg = safeRatio(hostRevenue, hostObservedPax);
+    const compFareAvg = safeRatio(compRevenue, compObservedPax);
+
+    return [
+      { id: "flights", label: "Flights", host: hostFlights, comp: compFlights, format: (v) => formatNumber(v, 0), accent: false },
+      { id: "pax", label: "Observed Pax", host: hostObservedPax, comp: compObservedPax, format: (v) => formatNumber(v, 1), accent: false },
+      { id: "lf", label: "Avg LF %", host: hostLfAvg, comp: compLfAvg, format: (v) => formatPct(v, 1), accent: false },
+      { id: "revenue", label: "Revenue", host: hostRevenue, comp: compRevenue, format: (v) => formatNumber(v, 0), accent: true },
+      { id: "fare", label: "Avg Fare", host: hostFareAvg, comp: compFareAvg, format: (v) => formatNumber(v, 0), accent: false },
+    ];
+  }, [fvHostRows, fvCompRows]);
+
+  const fvNumericScales = useMemo(() => {
+    const keys = ["seatsPerDep", "observedPax", "loadFactor", "totalPax", "localPax", "flowPax", "revenue", "avgFare"];
+    const scales = {};
+    for (const key of keys) {
+      const values = fvFilteredFlights
+        .map((row) => Number(row[key]))
+        .filter((value) => Number.isFinite(value));
+      const max = values.length ? Math.max(...values.map((value) => Math.abs(value))) : 0;
+      scales[key] = { max };
+    }
+    return scales;
+  }, [fvFilteredFlights]);
+
+  const renderFvNumericCell = (value, key, digits = 1, isPct = false, allowNull = false) => {
+    if ((value == null || value === "") && allowNull) return "—";
+    const num = Number(value || 0);
+    const max = Number(fvNumericScales[key]?.max || 0);
+    const intensity = max > 0 ? Math.min(1, Math.abs(num) / max) : 0;
+    return (
+      <span className="fv-num-chip" style={{ "--fv-heat": intensity }}>
+        {isPct ? formatPct(num, digits) : formatNumber(num, digits)}
+      </span>
+    );
+  };
+
+  const toggleFvOrig = (orig) => {
+    const next = normalizeCode(orig);
+    setFvOrig((prev) => (prev === next ? "" : next));
+    setSelectedFlightKey(null);
+  };
+
+  const toggleFvDest = (dest) => {
+    const next = normalizeCode(dest);
+    setFvDest((prev) => (prev === next ? "" : next));
+    setSelectedFlightKey(null);
+  };
 
   const fvSelectedFlight = selectedFlightKey ? fvFilteredFlights.find((f) => f.key === selectedFlightKey) ?? null : null;
 
@@ -797,6 +1094,27 @@ export default function AppSimple() {
 
   // O&D View: market summary rows
   const odViewMarketRows = useMemo(() => {
+    const level2Rows = (bundle?.level2_od_airline_share_summary || [])
+      .filter((r) => `${r.orig}-${r.dest}` === selectedOd)
+      .map((r) => {
+        const traffic = Number(r.total_traffic_est || 0);
+        const revenue = Number(r.total_revenue_est || 0);
+        return {
+          aln: String(r.carrier || "").trim() || "?",
+          nstops: Number(r.nonstop_itinerary_count || 0),
+          cncts: Number(r.single_connect_itinerary_count || 0),
+          demand: Number(r.total_demand_est || 0),
+          traffic,
+          revenue,
+          demandShare: Number(r.demand_share_pct_est || 0),
+          trafficShare: Number(r.traffic_share_pct_est || 0),
+          revenueShare: Number(r.revenue_share_pct_est || 0),
+          avgFare: traffic > 0 ? revenue / traffic : 0,
+        };
+      })
+      .sort((a, b) => b.demand - a.demand);
+    if (level2Rows.length) return level2Rows;
+
     const groups = new Map();
     for (const row of itineraryRows) {
       const aln = String(row["Flt Desg (Seg1)"] || "").trim().split(/\s+/)[0] || "?";
@@ -807,7 +1125,9 @@ export default function AppSimple() {
       const revenue = Number(row["Pax Revenue($)"] || 0);
       const g = groups.get(aln) || { aln, nstops: 0, cncts: 0, demand: 0, traffic: 0, revenue: 0 };
       if (stops === 0) g.nstops += freq; else g.cncts += freq;
-      g.demand += demand; g.traffic += traffic; g.revenue += revenue;
+      g.demand += demand;
+      g.traffic += traffic;
+      g.revenue += revenue;
       groups.set(aln, g);
     }
     const rows = [...groups.values()].sort((a, b) => b.demand - a.demand);
@@ -820,9 +1140,8 @@ export default function AppSimple() {
       trafficShare: (r.traffic / mktTraffic) * 100,
       revenueShare: (r.revenue / mktRevenue) * 100,
       avgFare: r.traffic > 0 ? r.revenue / r.traffic : 0,
-      mktDemand, mktTraffic, mktRevenue,
     }));
-  }, [itineraryRows]);
+  }, [bundle, itineraryRows, selectedOd]);
 
   const odViewHostRow = odViewMarketRows.find((r) => r.aln === hostAirline) ?? null;
   const odViewMarketSize = odViewMarketRows.reduce((s, r) => s + r.demand, 0);
@@ -831,7 +1150,7 @@ export default function AppSimple() {
   return (
     <div className="app-shell app-shell-vision">
       <aside className="sidebar">
-        <div className="sidebar-brand"><div><div className="eyebrow">Airline Insights</div><strong>{hostAirline || "—"} Ops Studio</strong></div></div>
+        <div className="sidebar-brand"><div><div className="eyebrow">Airline Insights</div><strong>{hostAirline || "—"}</strong></div></div>
         <nav className="tabs sidebar-tabs">
           {tabs.map((tab) => <button key={tab.id} className={tab.id === activeTab ? "tab active" : "tab"} onClick={() => setActiveTab(tab.id)}><span>{tab.label}</span></button>)}
         </nav>
@@ -852,6 +1171,7 @@ export default function AppSimple() {
               <div className="selector-wrap topbar-selector">
                 <label htmlFor="od-selector">Selected OD</label>
                 <select id="od-selector" value={selectedOd} onChange={(event) => setSelectedOd(event.target.value)}>
+                  {!odOptions.length ? <option value="">No ODs available</option> : null}
                   {odOptions.map((od) => <option key={od} value={od}>{od}</option>)}
                 </select>
               </div>
@@ -860,7 +1180,6 @@ export default function AppSimple() {
         </header>
 
         <NetworkScorecard
-          hostAirline={hostAirline}
           hostPax={hostPax}
           hostSeats={hostSeats}
           avgLoadFactor={avgLoadFactor}
@@ -873,18 +1192,44 @@ export default function AppSimple() {
         <section className="panel panel-vision">
           {activeTab === "summary" ? <div className="tab-content">
             {reportStatus === "loading" ? <div className="loading">Loading selected OD report data…</div> : null}
+            <div className="network-filter-bar">
+              <div className="fv-filter-item">
+                <label className="fv-filter-label">Origin</label>
+                <select value={networkOrigFilter} className="fv-filter-select" onChange={(e) => setNetworkOrigFilter(normalizeCode(e.target.value))}>
+                  <option value="">All Origins</option>
+                  {networkOrigOptions.map((o) => <option key={o} value={o}>{o}</option>)}
+                </select>
+              </div>
+              <div className="fv-filter-item">
+                <label className="fv-filter-label">Destination</label>
+                <select value={networkDestFilter} className="fv-filter-select" onChange={(e) => setNetworkDestFilter(normalizeCode(e.target.value))}>
+                  <option value="">All Destinations</option>
+                  {networkDestOptions.map((d) => <option key={d} value={d}>{d}</option>)}
+                </select>
+              </div>
+              {(networkOrigFilter || networkDestFilter) ? (
+                <button className="fv-clear-btn" onClick={() => { setNetworkOrigFilter(""); setNetworkDestFilter(""); }}>
+                  Clear
+                </button>
+              ) : null}
+            </div>
             <Table
+
               columns={[
-                { key: "od", label: "OD", render: (value) => <strong>{value}</strong> },
-                { key: "weeklyDepartures", label: "Wkly Deps", render: (value) => formatNumber(value, 0) },
-                { key: "localPax", label: "Local Pax", render: (value) => formatNumber(value, 1) },
-                { key: "flowPax", label: "Flow Pax", render: (value) => formatNumber(value, 1) },
-                { key: "demandMix", label: "Demand Mix", render: (_, row) => <SplitBar localPct={row.localDemandPct} flowPct={row.flowDemandPct} /> },
-                { key: "localRevenue", label: "Local Revenue", render: (value) => formatNumber(value, 0) },
-                { key: "flowRevenue", label: "Flow Revenue", render: (value) => formatNumber(value, 0) },
-                { key: "revenueMix", label: "Revenue Mix", render: (_, row) => <SplitBar localPct={row.localRevenuePct} flowPct={row.flowRevenuePct} /> },
+                { key: "orig", label: "Origin", render: (value) => <strong>{normalizeCode(value)}</strong> },
+                { key: "dest", label: "Destination", render: (value) => <strong>{normalizeCode(value)}</strong> },
+                { key: "weeklyDepartures", label: "Wkly Deps", render: (value) => renderNetworkNumericCell(value, "weeklyDepartures", 0) },
+                { key: "localPax", label: "Local Pax", render: (value) => renderNetworkNumericCell(value, "localPax", 1) },
+                { key: "flowPax", label: "Flow Pax", render: (value) => renderNetworkNumericCell(value, "flowPax", 1) },
+                { key: "mix", label: "Demand/Revenue Mix", render: (_, row) => <MixFusion demandLocalPct={row.localDemandPct} demandFlowPct={row.flowDemandPct} revenueLocalPct={row.localRevenuePct} revenueFlowPct={row.flowRevenuePct} /> },
+                { key: "flowPddPct", label: "Flow PDD %", render: (value) => renderNetworkNumericCell(value, "flowPddPct", 1, true) },
+                { key: "flowApmPct", label: "Flow APM %", render: (value) => renderNetworkNumericCell(value, "flowApmPct", 1, true) },
+                { key: "absPaxDiffPct", label: "Abs Pax Diff %", render: (value) => renderNetworkNumericCell(value, "absPaxDiffPct", 1, true) },
+                { key: "absPlfDiffPct", label: "Abs LF Diff pts", render: (value) => renderNetworkNumericCell(value, "absPlfDiffPct", 1) },
+                { key: "localRevenue", label: "Local Revenue", render: (value) => renderNetworkNumericCell(value, "localRevenue", 0) },
+                { key: "flowRevenue", label: "Flow Revenue", render: (value) => renderNetworkNumericCell(value, "flowRevenue", 0) },
               ]}
-              rows={odNetworkRows}
+              rows={odNetworkRowsFiltered}
               emptyMessage="No host OD aggregates available."
               onRowClick={(row) => setNetworkClickedOd((prev) => prev === row.od ? null : row.od)}
               selectedKey={networkClickedOd}
@@ -898,14 +1243,14 @@ export default function AppSimple() {
     <div className="fv-filter-bar">
       <div className="fv-filter-item">
         <label className="fv-filter-label">Origin</label>
-        <select className="fv-filter-select" value={fvOrig} onChange={(e) => { setFvOrig(e.target.value); setFvDest(""); setSelectedFlightKey(null); }}>
+        <select className="fv-filter-select" value={fvOrig} onChange={(e) => { setFvOrig(normalizeCode(e.target.value)); setSelectedFlightKey(null); }}>
           <option value="">All Origins</option>
           {fvOrigOptions.map((o) => <option key={o} value={o}>{o}</option>)}
         </select>
       </div>
       <div className="fv-filter-item">
         <label className="fv-filter-label">Destination</label>
-        <select className="fv-filter-select" value={fvDest} onChange={(e) => { setFvDest(e.target.value); setSelectedFlightKey(null); }}>
+        <select className="fv-filter-select" value={fvDest} onChange={(e) => { setFvDest(normalizeCode(e.target.value)); setSelectedFlightKey(null); }}>
           <option value="">All Destinations</option>
           {fvDestOptions.map((d) => <option key={d} value={d}>{d}</option>)}
         </select>
@@ -933,30 +1278,29 @@ export default function AppSimple() {
     {/* Summary KPI Strip */}
     {fvFilteredFlights.length > 0 ? (
       <div className="fv-kpi-strip">
-        <div className="fv-kpi-card">
-          <div className="fv-kpi-label">{hostAirline} Flights</div>
-          <div className="fv-kpi-value">{fvFilteredFlights.filter((f) => f.isHost).length}</div>
-        </div>
-        <div className="fv-kpi-card">
-          <div className="fv-kpi-label">Competitor Flights</div>
-          <div className="fv-kpi-value">{fvFilteredFlights.filter((f) => !f.isHost).length}</div>
-        </div>
-        <div className="fv-kpi-card">
-          <div className="fv-kpi-label">{hostAirline} Weekly Pax</div>
-          <div className="fv-kpi-value">{formatNumber(fvFilteredFlights.filter((f) => f.isHost).reduce((s, f) => s + (f.totalPax || 0), 0), 1)}</div>
-        </div>
-        <div className="fv-kpi-card">
-          <div className="fv-kpi-label">{hostAirline} Local Pax</div>
-          <div className="fv-kpi-value">{formatNumber(fvFilteredFlights.filter((f) => f.isHost).reduce((s, f) => s + (f.localPax || 0), 0), 1)}</div>
-        </div>
-        <div className="fv-kpi-card">
-          <div className="fv-kpi-label">{hostAirline} Flow Pax</div>
-          <div className="fv-kpi-value">{formatNumber(fvFilteredFlights.filter((f) => f.isHost).reduce((s, f) => s + (f.flowPax || 0), 0), 1)}</div>
-        </div>
-        <div className="fv-kpi-card accent">
-          <div className="fv-kpi-label">{hostAirline} Revenue</div>
-          <div className="fv-kpi-value">{formatNumber(fvFilteredFlights.filter((f) => f.isHost).reduce((s, f) => s + (f.revenue || 0), 0), 0)}</div>
-        </div>
+        {fvKpiCards.map((card) => {
+          const total = card.host + card.comp;
+          const hostPct = total > 0 ? (card.host / total) * 100 : 0;
+          const compPct = total > 0 ? (card.comp / total) * 100 : 0;
+          return (
+            <div key={card.id} className={`fv-kpi-card ${card.accent ? "accent" : ""}`}>
+              <div className="fv-kpi-label">{card.label}</div>
+              <div className="fv-kpi-value">{card.format(card.host)}</div>
+              <div className="fv-kpi-compare">
+                <div className="fv-kpi-compare-row">
+                  <span>{hostAirline || "Host"}</span>
+                  <div className="fv-kpi-track"><div className="fv-kpi-fill host" style={{ width: `${hostPct}%` }} /></div>
+                  <strong>{card.format(card.host)}</strong>
+                </div>
+                <div className="fv-kpi-compare-row">
+                  <span>Comp</span>
+                  <div className="fv-kpi-track"><div className="fv-kpi-fill comp" style={{ width: `${compPct}%` }} /></div>
+                  <strong>{card.format(card.comp)}</strong>
+                </div>
+              </div>
+            </div>
+          );
+        })}
       </div>
     ) : null}
 
@@ -985,21 +1329,37 @@ export default function AppSimple() {
               >
                 <td><strong style={{ color: f.isHost ? "var(--accent-light)" : "var(--text-primary)" }}>{f.airline}</strong></td>
                 <td>{f.flightNumber}</td>
-                <td>{f.orig}</td><td>{f.dest}</td>
+                <td>
+                  <button
+                    className={`fv-od-pill ${fvOrig === f.orig ? "active" : ""}`}
+                    onClick={(e) => { e.stopPropagation(); toggleFvOrig(f.orig); }}
+                    title={`Filter Origin ${f.orig}`}
+                  >
+                    {f.orig}
+                  </button>
+                </td><td>
+                  <button
+                    className={`fv-od-pill ${fvDest === f.dest ? "active" : ""}`}
+                    onClick={(e) => { e.stopPropagation(); toggleFvDest(f.dest); }}
+                    title={`Filter Destination ${f.dest}`}
+                  >
+                    {f.dest}
+                  </button>
+                </td>
                 <td className="mono">{f.freq || "—"}</td>
                 <td>{formatNumber(f.weeklyDeps, 0)}</td>
                 <td>{f.equipment || "—"}</td>
-                <td>{formatNumber(f.seatsPerDep, 0)}</td>
+                <td>{renderFvNumericCell(f.seatsPerDep, "seatsPerDep", 0)}</td>
                 <td>{f.deptTime || "—"}</td>
                 <td>{f.arvlTime || "—"}</td>
                 <td>{f.elapTime || "—"}</td>
-                <td>{formatNumber(f.observedPax, 1)}</td>
-                <td>{formatPct(f.loadFactor, 1)}</td>
-                <td>{f.isHost ? formatNumber(f.totalPax, 1) : "—"}</td>
-                <td>{f.isHost ? formatNumber(f.localPax, 1) : "—"}</td>
-                <td>{f.isHost ? formatNumber(f.flowPax, 1) : "—"}</td>
-                <td>{formatNumber(f.revenue, 0)}</td>
-                <td>{f.avgFare != null ? formatNumber(f.avgFare, 0) : "—"}</td>
+                <td>{renderFvNumericCell(f.observedPax, "observedPax", 1)}</td>
+                <td>{renderFvNumericCell(f.loadFactor, "loadFactor", 1, true)}</td>
+                <td>{f.isHost ? renderFvNumericCell(f.totalPax, "totalPax", 1) : "—"}</td>
+                <td>{f.isHost ? renderFvNumericCell(f.localPax, "localPax", 1) : "—"}</td>
+                <td>{f.isHost ? renderFvNumericCell(f.flowPax, "flowPax", 1) : "—"}</td>
+                <td>{renderFvNumericCell(f.revenue, "revenue", 0)}</td>
+                <td>{f.avgFare != null ? renderFvNumericCell(f.avgFare, "avgFare", 0, false, true) : "—"}</td>
               </tr>
             ))}
           </tbody>
