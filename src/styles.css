@@ -2325,3 +2325,136 @@ input[type=range] {
   transition: width 0.3s;
 }
 .itin-connecting td { background: rgba(245, 158, 11, 0.04); }
+
+.exp-grid {
+  display: grid;
+  grid-template-columns: 1.5fr 1fr;
+  gap: 12px;
+  min-height: 0;
+}
+
+.exp-panel {
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  padding: 12px;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.exp-head h3 {
+  margin: 0;
+  font-size: 0.94rem;
+}
+
+.exp-head p {
+  margin: 2px 0 0;
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+}
+
+.exp-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.exp-filter {
+  border: 1px solid rgba(145, 158, 171, 0.3);
+  background: #ffffff;
+  color: #475467;
+  border-radius: 999px;
+  padding: 5px 10px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.exp-filter span {
+  background: rgba(145, 158, 171, 0.16);
+  color: #334155;
+  border-radius: 999px;
+  padding: 1px 6px;
+  font-size: 0.68rem;
+}
+
+.exp-filter.active {
+  background: rgba(32, 101, 209, 0.1);
+  border-color: rgba(32, 101, 209, 0.35);
+  color: #123b7a;
+}
+
+.exp-sankey {
+  width: 100%;
+  height: 460px;
+  background: linear-gradient(180deg, rgba(145, 158, 171, 0.08), rgba(145, 158, 171, 0.03));
+  border: 1px solid rgba(145, 158, 171, 0.18);
+  border-radius: 10px;
+}
+
+.exp-node-label {
+  fill: #212b36;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.exp-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  font-size: 0.74rem;
+  color: var(--text-secondary);
+}
+
+.exp-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  display: inline-block;
+  margin-right: 4px;
+}
+
+.exp-dot.exp-blue { background: #2065d1; }
+.exp-dot.exp-amber { background: #d97706; }
+.exp-dot.exp-cyan { background: #0ea5e9; }
+
+.exp-table-wrap {
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  overflow: auto;
+  max-height: 460px;
+}
+
+.exp-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.exp-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--bg-card);
+  text-align: left;
+  padding: 9px 10px;
+  font-size: 0.68rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  border-bottom: 1px solid var(--border-color);
+}
+
+.exp-table tbody td {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border-color);
+  font-size: 0.8rem;
+}
+
+@media (max-width: 1180px) {
+  .exp-grid { grid-template-columns: 1fr; }
+}

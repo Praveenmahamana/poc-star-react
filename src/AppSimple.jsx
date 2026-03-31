@@ -7,6 +7,7 @@ const tabs = [
   { id: "summary", label: "Network", icon: "🌐" },
   { id: "flightView", label: "Flight View", icon: "✈️" },
   { id: "odView", label: "O&D View", icon: "🧭" },
+  { id: "experiment", label: "Experiment", icon: "🧪" },
 ];
 
 function formatNumber(value, digits = 0) {
@@ -242,6 +243,346 @@ function MixFusion({ demandLocalPct, demandFlowPct, revenueLocalPct, revenueFlow
         <div className="mix-fusion-track">
           <div className="mix-fusion-local" style={{ width: `${Math.max(0, Number(revenueLocalPct || 0))}%` }} />
           <div className="mix-fusion-flow" style={{ width: `${Math.max(0, Number(revenueFlowPct || 0))}%` }} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ExperimentSankey({ rows, hostAirline, mlSignals }) {
+  const [segmentFilters, setSegmentFilters] = useState({
+    normal: true,
+    highOpp: true,
+    flowIncrease: true,
+    localIncrease: true,
+    elapsedChange: true,
+  });
+
+  const model = useMemo(() => {
+    const base = (rows || [])
+      .map((r) => {
+        const totalPax = Number(r.totalPax || (Number(r.localPax || 0) + Number(r.flowPax || 0)));
+        const totalRevenue = Number(r.totalRevenue || (Number(r.localRevenue || 0) + Number(r.flowRevenue || 0)));
+        const flowShare = totalPax > 0 ? (Number(r.flowPax || 0) / totalPax) * 100 : 0;
+        const localShare = totalPax > 0 ? (Number(r.localPax || 0) / totalPax) * 100 : 0;
+        const avgFare = totalPax > 0 ? totalRevenue / totalPax : 0;
+        const flowShift = Number(r.flowApmPct || 0) - Number(r.flowPddPct || 0);
+        const elapsedTimeDeltaPct = Number(r.elapsedTimeDeltaPct || 0);
+        return {
+          ...r,
+          totalPax,
+          totalRevenue,
+          flowShare,
+          localShare,
+          avgFare,
+          flowShift,
+          elapsedTimeDeltaPct,
+          absPaxDiffPct: Number(r.absPaxDiffPct || 0),
+          absPlfDiffPct: Number(r.absPlfDiffPct || 0),
+          loadFactorPct: Number(r.loadFactorPct || 0),
+        };
+      })
+      .filter((r) => r.totalPax > 0)
+      .sort((a, b) => b.totalPax - a.totalPax);
+
+    if (!base.length) {
+      return { nodesLeft: [], nodesRight: [], links: [], top: [], totals: { pax: 0, revenue: 0 }, segmentCounts: {} };
+    }
+
+    const toMeanStd = (vals) => {
+      const mean = vals.reduce((s, v) => s + v, 0) / vals.length;
+      const variance = vals.reduce((s, v) => s + (v - mean) ** 2, 0) / vals.length;
+      return { mean, std: Math.sqrt(variance) || 1 };
+    };
+
+    const flowMs = toMeanStd(base.map((r) => r.flowShare));
+    const paxDiffMs = toMeanStd(base.map((r) => r.absPaxDiffPct));
+    const plfDiffMs = toMeanStd(base.map((r) => r.absPlfDiffPct));
+    const fareMs = toMeanStd(base.map((r) => r.avgFare));
+
+    const enriched = base.map((r) => {
+      const zFlow = Math.abs((r.flowShare - flowMs.mean) / flowMs.std);
+      const zPax = Math.abs((r.absPaxDiffPct - paxDiffMs.mean) / paxDiffMs.std);
+      const zPlf = Math.abs((r.absPlfDiffPct - plfDiffMs.mean) / plfDiffMs.std);
+      const zFare = Math.abs((r.avgFare - fareMs.mean) / fareMs.std);
+      const anomalyScore = Math.min(100, ((zFlow + zPax + zPlf + zFare) / 4) * 40);
+      const opportunityScore = Math.min(
+        100,
+        r.flowShare * 0.4 + Math.min(100, r.absPaxDiffPct) * 0.28 + Math.min(100, r.absPlfDiffPct * 4) * 0.17 + Math.max(0, 100 - r.loadFactorPct) * 0.15,
+      );
+      const upliftRevenueEst = Math.round(r.totalRevenue * (opportunityScore / 100) * 0.08);
+      const segment = {
+        normal: opportunityScore <= 55 && anomalyScore <= 45,
+        highOpp: opportunityScore > 55,
+        flowIncrease: r.flowShift >= 5,
+        localIncrease: r.localShare >= 60,
+        elapsedChange: Math.abs(r.elapsedTimeDeltaPct) >= 8,
+      };
+      return { ...r, anomalyScore, opportunityScore, upliftRevenueEst, segment };
+    });
+
+    const segmentCounts = {
+      normal: enriched.filter((r) => r.segment.normal).length,
+      highOpp: enriched.filter((r) => r.segment.highOpp).length,
+      flowIncrease: enriched.filter((r) => r.segment.flowIncrease).length,
+      localIncrease: enriched.filter((r) => r.segment.localIncrease).length,
+      elapsedChange: enriched.filter((r) => r.segment.elapsedChange).length,
+    };
+
+    const activeKeys = Object.keys(segmentFilters).filter((k) => segmentFilters[k]);
+    const filtered = activeKeys.length
+      ? enriched.filter((r) => activeKeys.some((k) => r.segment[k]))
+      : enriched;
+
+    const linksRaw = filtered.slice(0, 48).map((r) => ({
+      source: normalizeCode(r.orig),
+      target: normalizeCode(r.dest),
+      value: r.totalPax,
+      anomaly: r.anomalyScore,
+      opportunity: r.opportunityScore,
+      flowShift: r.flowShift,
+      localShare: r.localShare,
+      elapsedTimeDeltaPct: r.elapsedTimeDeltaPct,
+    }));
+
+    const leftTotals = new Map();
+    const rightTotals = new Map();
+    for (const l of linksRaw) {
+      leftTotals.set(l.source, (leftTotals.get(l.source) || 0) + l.value);
+      rightTotals.set(l.target, (rightTotals.get(l.target) || 0) + l.value);
+    }
+
+    const nodesLeft = [...leftTotals.entries()].map(([id, value]) => ({ id, value })).sort((a, b) => b.value - a.value);
+    const nodesRight = [...rightTotals.entries()].map(([id, value]) => ({ id, value })).sort((a, b) => b.value - a.value);
+    const top = filtered.slice().sort((a, b) => b.opportunityScore - a.opportunityScore).slice(0, 10);
+    const totals = {
+      pax: filtered.reduce((s, r) => s + r.totalPax, 0),
+      revenue: filtered.reduce((s, r) => s + r.totalRevenue, 0),
+    };
+
+    const weightedMean = (arr, valFn, wtFn) => {
+      const w = arr.reduce((s, x) => s + wtFn(x), 0) || 1;
+      return arr.reduce((s, x) => s + valFn(x) * wtFn(x), 0) / w;
+    };
+    const baseForRec = filtered.length ? filtered : enriched;
+    const flowShiftW = weightedMean(baseForRec, (r) => r.flowShift, (r) => r.totalPax);
+    const elapsedDeltaW = weightedMean(baseForRec, (r) => r.elapsedTimeDeltaPct, (r) => r.totalPax);
+    const fareDevW = weightedMean(baseForRec, (r) => ((r.avgFare - fareMs.mean) / fareMs.std), (r) => r.totalPax);
+    const plfGapW = weightedMean(baseForRec, (r) => r.absPlfDiffPct, (r) => r.totalPax);
+    const paxGapW = weightedMean(baseForRec, (r) => r.absPaxDiffPct, (r) => r.totalPax);
+    const clip = (v, lo = -1, hi = 1) => Math.max(lo, Math.min(hi, v));
+    const confidence = Math.min(0.95, 0.45 + (baseForRec.length / 80));
+    const heuristicRecommendations = [
+      {
+        coeff: "beta_flow_connectivity",
+        delta: Number((clip(flowShiftW / 20) * 0.14).toFixed(3)),
+        confidence,
+        reason: "Align model flow utility with observed APM vs PDD flow-share drift.",
+      },
+      {
+        coeff: "beta_elapsed_time",
+        delta: Number((clip(-elapsedDeltaW / 15) * 0.12).toFixed(3)),
+        confidence,
+        reason: "Adjust elapsed-time penalty using host-vs-market elapsed change signal.",
+      },
+      {
+        coeff: "beta_fare_sensitivity",
+        delta: Number((clip(-fareDevW / 2) * 0.11).toFixed(3)),
+        confidence,
+        reason: "Correct fare response where yield deviation and share movement diverge.",
+      },
+      {
+        coeff: "beta_service_quality",
+        delta: Number((clip((paxGapW + plfGapW * 3) / 120) * 0.09).toFixed(3)),
+        confidence,
+        reason: "Reduce residual demand/LF mismatch likely driven by service-quality underfit.",
+      },
+    ];
+
+    return { nodesLeft, nodesRight, links: linksRaw, top, totals, segmentCounts, heuristicRecommendations };
+  }, [rows, segmentFilters]);
+
+  const coefficientRecommendations = useMemo(() => {
+    const recs = Array.isArray(mlSignals?.recommendations) ? mlSignals.recommendations : [];
+    if (recs.length) return recs;
+    return model.heuristicRecommendations || [];
+  }, [mlSignals, model.heuristicRecommendations]);
+
+  const sankey = useMemo(() => {
+    const width = 980;
+    const height = 460;
+    const nodeW = 16;
+    const pad = 8;
+
+    const layoutColumn = (nodes, x) => {
+      const total = nodes.reduce((s, n) => s + n.value, 0) || 1;
+      const usable = height - pad * (nodes.length - 1);
+      const scale = usable / total;
+      let y = 0;
+      return {
+        byId: new Map(
+          nodes.map((n) => {
+            const h = Math.max(8, n.value * scale);
+            const item = { ...n, x, y, h };
+            y += h + pad;
+            return [n.id, item];
+          }),
+        ),
+        scale,
+      };
+    };
+
+    const left = layoutColumn(model.nodesLeft, 0);
+    const right = layoutColumn(model.nodesRight, width - nodeW);
+    const outOffset = new Map();
+    const inOffset = new Map();
+
+    const links = model.links
+      .map((l) => {
+        const s = left.byId.get(l.source);
+        const t = right.byId.get(l.target);
+        if (!s || !t) return null;
+        const w = Math.max(1.2, l.value * Math.min(left.scale, right.scale));
+        const so = outOffset.get(s.id) || 0;
+        const to = inOffset.get(t.id) || 0;
+        const sy = s.y + so + w / 2;
+        const ty = t.y + to + w / 2;
+        outOffset.set(s.id, so + w);
+        inOffset.set(t.id, to + w);
+        const c1x = width * 0.35;
+        const c2x = width * 0.65;
+        const d = `M ${s.x + nodeW} ${sy} C ${c1x} ${sy}, ${c2x} ${ty}, ${t.x} ${ty}`;
+        return { ...l, d, w };
+      })
+      .filter(Boolean);
+
+    return { width, height, nodeW, left: [...left.byId.values()], right: [...right.byId.values()], links };
+  }, [model]);
+
+  if (!model.links.length) return <div className="empty-state">No routes available for experiment.</div>;
+
+  const segmentButtons = [
+    { key: "normal", label: "Normal Flow" },
+    { key: "highOpp", label: "High Opp Route" },
+    { key: "flowIncrease", label: "Flow Increase" },
+    { key: "localIncrease", label: "Local Increase" },
+    { key: "elapsedChange", label: "Elapsed Time Change" },
+  ];
+
+  return (
+    <div className="exp-grid">
+      <div className="exp-panel">
+        <div className="exp-head">
+          <h3>Network Flow Sankey (Experiment)</h3>
+          <p>ML-style anomaly and opportunity scoring from OD demand, flow mix, fare, and calibration deltas.</p>
+        </div>
+        <div className="exp-filters">
+          {segmentButtons.map((b) => (
+            <button
+              key={b.key}
+              className={segmentFilters[b.key] ? "exp-filter active" : "exp-filter"}
+              onClick={() => setSegmentFilters((prev) => ({ ...prev, [b.key]: !prev[b.key] }))}
+            >
+              {b.label}
+              <span>{model.segmentCounts[b.key] || 0}</span>
+            </button>
+          ))}
+        </div>
+        <svg className="exp-sankey" viewBox={`0 0 ${sankey.width} ${sankey.height}`} preserveAspectRatio="xMidYMid meet">
+          {sankey.links.map((l, i) => (
+            <path
+              key={`l-${i}`}
+              d={l.d}
+              stroke={l.opportunity > 55 ? "#d97706" : (l.flowShift >= 5 ? "#0ea5e9" : "#2065d1")}
+              strokeOpacity={0.34 + Math.min(0.52, l.anomaly / 180)}
+              strokeWidth={l.w}
+              fill="none"
+              strokeLinecap="round"
+            />
+          ))}
+          {sankey.left.map((n) => (
+            <g key={`ln-${n.id}`}>
+              <rect x={n.x} y={n.y} width={sankey.nodeW} height={n.h} rx="3" fill="#2065d1" opacity="0.85" />
+              <text x={n.x + sankey.nodeW + 6} y={n.y + n.h / 2} dominantBaseline="middle" className="exp-node-label">{n.id}</text>
+            </g>
+          ))}
+          {sankey.right.map((n) => (
+            <g key={`rn-${n.id}`}>
+              <rect x={n.x} y={n.y} width={sankey.nodeW} height={n.h} rx="3" fill="#0ea5e9" opacity="0.85" />
+              <text x={n.x - 6} y={n.y + n.h / 2} textAnchor="end" dominantBaseline="middle" className="exp-node-label">{n.id}</text>
+            </g>
+          ))}
+        </svg>
+        <div className="exp-legend">
+          <span><i className="exp-dot exp-blue" /> Normal flow</span>
+          <span><i className="exp-dot exp-amber" /> High opportunity route</span>
+          <span><i className="exp-dot exp-cyan" /> Flow increase signal</span>
+          <span>Total Pax: <strong>{formatNumber(model.totals.pax, 0)}</strong></span>
+          <span>Total Revenue: <strong>{formatNumber(model.totals.revenue, 0)}</strong></span>
+        </div>
+      </div>
+      <div className="exp-panel">
+        <div className="exp-head">
+          <h3>Top Opportunity Routes</h3>
+          <p>Unsupervised score using flow-share skew, calibration gaps, fare deviation, and LF slack.</p>
+        </div>
+        <div className="exp-table-wrap">
+          <table className="exp-table">
+            <thead>
+              <tr>
+                <th>OD</th>
+                <th>Opportunity</th>
+                <th>Anomaly</th>
+                <th>Flow %</th>
+                <th>Est Uplift</th>
+              </tr>
+            </thead>
+            <tbody>
+              {model.top.map((r) => (
+                <tr key={r.od}>
+                  <td><strong>{r.od}</strong></td>
+                  <td>{formatPct(r.opportunityScore, 1)}</td>
+                  <td>{formatPct(r.anomalyScore, 1)}</td>
+                  <td>{formatPct(r.flowShare, 1)}</td>
+                  <td>{formatNumber(r.upliftRevenueEst, 0)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <div className="exp-head" style={{ marginTop: "6px" }}>
+          <h3>Logit Coefficient Suggestions (MLE Signals)</h3>
+          <p>
+            {Array.isArray(mlSignals?.recommendations) && mlSignals.recommendations.length
+              ? `Ridge model from workset residuals (R² ${formatNumber((Number(mlSignals?.r2 || 0) * 100), 1)}%). Suggested deltas are not auto-applied.`
+              : "Fallback heuristic deltas from weighted residual signals in current workset (not auto-applied)."}
+          </p>
+        </div>
+        <div className="exp-table-wrap">
+          <table className="exp-table">
+            <thead>
+              <tr>
+                <th>Coefficient</th>
+                <th>Baseline</th>
+                <th>Suggested Delta</th>
+                <th>Suggested Value</th>
+                <th>Confidence</th>
+                <th>Rationale</th>
+              </tr>
+            </thead>
+            <tbody>
+              {coefficientRecommendations.map((r) => (
+                <tr key={r.coeff}>
+                  <td><strong>{r.coeff}</strong></td>
+                  <td>{r.baseline != null ? Number(r.baseline).toFixed(4) : "\u2014"}</td>
+                  <td style={{ color: r.delta >= 0 ? "#0284c7" : "#b45309" }}>{r.delta >= 0 ? "+" : ""}{r.delta.toFixed(3)}</td>
+                  <td>{r.suggested != null ? Number(r.suggested).toFixed(4) : "\u2014"}</td>
+                  <td>{(Number(r.confidence || 0) * 100).toFixed(0)}%</td>
+                  <td>{r.reason}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       </div>
     </div>
@@ -714,6 +1055,25 @@ export default function AppSimple() {
     const level1ByOd = new Map(
       (bundle?.level1_host_od_summary || []).map((row) => [`${row.orig}-${row.dest}`, row]),
     );
+    const level2ByOd = new Map();
+    for (const r of bundle?.level2_od_airline_share_summary || []) {
+      const od = `${r.orig}-${r.dest}`;
+      const traffic = Number(r.total_traffic_est || 0);
+      const avgElapsed = Number(r.avg_elapsed_minutes || 0);
+      const item = level2ByOd.get(od) || {
+        marketElapsedWeighted: 0,
+        marketTraffic: 0,
+        hostElapsedWeighted: 0,
+        hostTraffic: 0,
+      };
+      item.marketElapsedWeighted += avgElapsed * traffic;
+      item.marketTraffic += traffic;
+      if (Boolean(r.is_host_airline)) {
+        item.hostElapsedWeighted += avgElapsed * traffic;
+        item.hostTraffic += traffic;
+      }
+      level2ByOd.set(od, item);
+    }
     const grouped = new Map();
     for (const row of bundle?.level3_host_flight_summary || []) {
       const key = `${row.orig}-${row.dest}`;
@@ -742,6 +1102,10 @@ export default function AppSimple() {
     }
     const rows = [...grouped.values()].map((row) => {
       const level1 = level1ByOd.get(row.od);
+      const level2 = level2ByOd.get(row.od);
+      const marketElapsed = level2?.marketTraffic ? level2.marketElapsedWeighted / level2.marketTraffic : 0;
+      const hostElapsed = level2?.hostTraffic ? level2.hostElapsedWeighted / level2.hostTraffic : 0;
+      const elapsedTimeDeltaPct = marketElapsed > 0 ? ((hostElapsed - marketElapsed) / marketElapsed) * 100 : 0;
       const demandDenominator = row.totalPax || row.localPax + row.flowPax || 1;
       const revDenominator = row.totalRevenue || row.localRevenue + row.flowRevenue || 1;
       return {
@@ -753,6 +1117,7 @@ export default function AppSimple() {
         absPlfDiffPct: Number(level1?.abs_plf_diff_pct_est || 0),
         flowPddPct: Number(level1?.flow_pdd_pct_est || 0),
         flowApmPct: Number(level1?.flow_apm_pct_est || 0),
+        elapsedTimeDeltaPct,
         localDemandPct: (row.localPax / demandDenominator) * 100,
         flowDemandPct: (row.flowPax / demandDenominator) * 100,
         localRevenuePct: (row.localRevenue / revDenominator) * 100,
@@ -1533,6 +1898,15 @@ export default function AppSimple() {
         </table>
       </div>
     </div>
+  </div>
+) : null}
+          {activeTab === "experiment" ? (
+  <div className="tab-content">
+    <ExperimentSankey
+      rows={odNetworkRowsFiltered.length ? odNetworkRowsFiltered : odNetworkRows}
+      hostAirline={hostAirline}
+      mlSignals={bundle?.ml_signals || null}
+    />
   </div>
 ) : null}
         </section>
