@@ -2328,9 +2328,10 @@ input[type=range] {
 
 .exp-grid {
   display: grid;
-  grid-template-columns: 1.5fr 1fr;
+  grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr);
   gap: 12px;
   min-height: 0;
+  width: 100%;
 }
 
 .exp-panel {
@@ -2342,6 +2343,7 @@ input[type=range] {
   display: flex;
   flex-direction: column;
   gap: 10px;
+  min-width: 0;
 }
 
 .exp-head h3 {
@@ -2428,6 +2430,7 @@ input[type=range] {
   border-radius: 10px;
   overflow: auto;
   max-height: 460px;
+  min-width: 0;
 }
 
 .exp-table {
@@ -2457,4 +2460,246 @@ input[type=range] {
 
 @media (max-width: 1180px) {
   .exp-grid { grid-template-columns: 1fr; }
+}
+
+.diag-root { margin-top: 14px; display: grid; gap: 12px; }
+.diag-controls { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; background: rgba(15, 23, 42, 0.42); border: 1px solid var(--border-color); border-radius: 12px; padding: 10px; }
+.diag-control { display: flex; flex-direction: column; gap: 6px; font-size: 0.82rem; color: var(--text-secondary); }
+.diag-control label { color: var(--text-primary); font-weight: 600; }
+.diag-control select, .diag-control input[type="range"] { width: 100%; }
+.diag-kpis { display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); }
+.diag-kpi { border: 1px solid var(--border-color); border-radius: 10px; background: rgba(10, 14, 28, 0.38); padding: 8px 10px; display: flex; flex-direction: column; gap: 4px; }
+.diag-kpi span { color: var(--text-secondary); font-size: 0.78rem; }
+.diag-kpi strong { font-size: 1.02rem; color: var(--text-primary); }
+.diag-grid { display: grid; gap: 12px; }
+.diag-grid.two { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+.diag-grid.three { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr); }
+.diag-card { border: 1px solid var(--border-color); border-radius: 12px; background: rgba(2, 6, 23, 0.45); padding: 10px; min-height: 180px; }
+.diag-card h3 { margin: 0 0 8px; font-size: 0.96rem; }
+.diag-svg-wrap { width: 100%; overflow: auto; }
+.diag-svg { width: 100%; min-width: 0; min-height: 200px; }
+.diag-axis { stroke: rgba(148, 163, 184, 0.45); stroke-width: 1; }
+.diag-axis-label, .diag-tick { fill: var(--text-secondary); font-size: 10px; }
+.diag-share-bars { display: grid; gap: 8px; }
+.diag-share-row { display: grid; grid-template-columns: 48px 1fr 108px; gap: 8px; align-items: center; }
+.diag-share-airline { font-weight: 700; font-size: 0.8rem; }
+.diag-share-track { position: relative; height: 16px; background: rgba(148, 163, 184, 0.15); border-radius: 999px; overflow: hidden; }
+.diag-share-pred { position: absolute; left: 0; top: 0; bottom: 0; background: rgba(2, 132, 199, 0.72); }
+.diag-share-actual { position: absolute; left: 0; top: 5px; height: 6px; background: rgba(245, 158, 11, 0.95); }
+.diag-share-num { text-align: right; font-size: 0.76rem; color: var(--text-secondary); }
+.diag-waterfall { display: grid; gap: 8px; }
+.diag-wf-row { display: grid; grid-template-columns: 160px 1fr 88px; gap: 8px; align-items: center; }
+.diag-wf-label { font-size: 0.76rem; color: var(--text-secondary); }
+.diag-wf-bar-wrap { height: 14px; border-radius: 999px; background: rgba(148, 163, 184, 0.14); overflow: hidden; }
+.diag-wf-bar { height: 100%; border-radius: 999px; }
+.diag-wf-bar.pos { background: rgba(14, 165, 233, 0.85); }
+.diag-wf-bar.neg { background: rgba(217, 119, 6, 0.85); }
+.diag-wf-val { text-align: right; font-size: 0.78rem; font-variant-numeric: tabular-nums; }
+.diag-mini-note { color: var(--text-secondary); font-size: 0.72rem; margin-top: 4px; }
+.diag-recs { display: grid; gap: 8px; }
+.diag-rec-item { border: 1px solid rgba(148, 163, 184, 0.22); border-radius: 8px; padding: 8px; font-size: 0.8rem; display: grid; gap: 3px; }
+.diag-table-wrap { overflow: auto; }
+.diag-table { width: 100%; border-collapse: collapse; font-size: 0.78rem; }
+.diag-table th, .diag-table td { border-bottom: 1px solid rgba(148, 163, 184, 0.18); padding: 6px; text-align: left; vertical-align: top; }
+.diag-link-btn { background: none; border: none; color: var(--accent-light); cursor: pointer; padding: 0; font: inherit; text-decoration: underline; }
+.diag-sev { padding: 2px 6px; border-radius: 999px; text-transform: capitalize; font-size: 0.72rem; }
+.diag-sev.warning { background: rgba(234, 179, 8, 0.2); color: #facc15; }
+.diag-sev.critical { background: rgba(239, 68, 68, 0.22); color: #f87171; }
+.diag-sev.normal { background: rgba(34, 197, 94, 0.2); color: #4ade80; }
+
+.tab-content {
+  display: grid;
+  gap: 14px;
+  min-height: 0;
+}
+
+.diag-card {
+  overflow: hidden;
+  min-width: 0;
+  width: 100%;
+}
+
+.diag-table-wrap {
+  max-height: 360px;
+  overflow: auto;
+}
+
+.diag-svg-wrap {
+  max-height: 360px;
+  overflow: auto;
+  min-width: 0;
+}
+
+@media (max-width: 900px) {
+  .diag-wf-row {
+    grid-template-columns: 120px 1fr 72px;
+  }
+  .diag-share-row {
+    grid-template-columns: 42px 1fr 96px;
+  }
+}
+
+/* Mantine Light Harmonization */
+:root {
+  --bg-app: #f8fafc;
+  --bg-card: #ffffff;
+  --bg-card-hover: #f8fafc;
+  --bg-elevated: #f1f5f9;
+  --border-color: #e2e8f0;
+  --text-primary: #0f172a;
+  --text-secondary: #64748b;
+}
+
+.panel, .panel-vision, .chart-card, .odv-section, .exp-panel, .diag-card {
+  background: #ffffff !important;
+  border: 1px solid #e2e8f0 !important;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.06), 0 8px 16px rgba(15, 23, 42, 0.04) !important;
+}
+
+.exp-sankey {
+  background: #ffffff !important;
+  border-color: #dbe3ef !important;
+  display: block;
+  max-height: 380px;
+}
+
+.exp-table thead th {
+  background: #f8fafc !important;
+}
+
+.tab-content {
+  background: transparent;
+}
+
+.diag-root {
+  background: transparent;
+}
+
+.diag-grid.two, .diag-grid.three {
+  align-items: stretch;
+}
+
+.diag-card {
+  position: relative;
+  isolation: isolate;
+}
+
+.diag-svg-wrap {
+  background: #fff;
+  border-radius: 10px;
+}
+
+.diag-svg {
+  display: block;
+  background: #fff;
+}
+
+.diag-table {
+  background: #fff;
+}
+
+.main-shell {
+  background: #f8fafc;
+}
+
+/* Sankey/Table overlap guards */
+.exp-grid {
+  align-items: start;
+  min-width: 0;
+}
+
+.exp-panel {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+}
+
+.exp-table-wrap {
+  position: relative;
+  z-index: 0;
+  isolation: isolate;
+}
+
+.exp-table thead th {
+  z-index: 2;
+}
+
+.exp-sankey {
+  position: relative;
+  z-index: 1;
+  display: block;
+  width: 100%;
+  height: min(460px, 52vh);
+  min-width: 0;
+}
+
+.diag-grid > *,
+.exp-grid > * {
+  min-width: 0;
+}
+
+@media (max-width: 1200px) {
+  .diag-grid.two { grid-template-columns: 1fr; }
+  .diag-grid.three { grid-template-columns: 1fr; }
+}
+
+/* Experiment/Diagnostics final layout guard (prevents panel overlay) */
+.tab-content .exp-grid,
+.tab-content .diag-grid {
+  position: relative;
+  isolation: isolate;
+  width: 100%;
+  min-width: 0;
+}
+
+.tab-content .diag-grid.two {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.tab-content .diag-grid.three {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.tab-content .exp-grid > *,
+.tab-content .diag-grid > * {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.tab-content .exp-panel,
+.tab-content .diag-card {
+  position: relative;
+  overflow: hidden;
+  contain: layout paint;
+  background: #ffffff;
+}
+
+.tab-content .diag-svg-wrap,
+.tab-content .exp-table-wrap {
+  max-width: 100%;
+  overflow: auto;
+}
+
+.tab-content .diag-svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.tab-content .exp-sankey {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+}
+
+.tab-content .exp-table thead th {
+  position: static;
+}
+
+@media (max-width: 1200px) {
+  .tab-content .diag-grid.two,
+  .tab-content .diag-grid.three,
+  .tab-content .exp-grid {
+    grid-template-columns: 1fr;
+  }
 }

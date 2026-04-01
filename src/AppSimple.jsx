@@ -1,7 +1,9 @@
 import React, { useEffect, useMemo, useState } from "react";
 import initSqlJs from "sql.js";
 import sqlWasmUrl from "sql.js/dist/sql-wasm.wasm?url";
+import { Badge, Group, Paper, ScrollArea, Select, SimpleGrid, Slider, Stack, Table as MantineTable, Text, Title } from "@mantine/core";
 import initialBundle from "./generated/dashboard_bundle.json";
+import { buildRouteWaterfallContributions, computeDiagnosticsDataset, defaultDiagnosticsConfig } from "./experiments/calibrationDiagnostics";
 
 const tabs = [
   { id: "summary", label: "Network", icon: "🌐" },
@@ -226,6 +228,18 @@ function countFreqDays(freq) {
 
 function safeRatio(num, den) {
   return den > 0 ? num / den : 0;
+}
+
+function dedupeBy(items, keyFn) {
+  const seen = new Set();
+  const out = [];
+  for (const item of items || []) {
+    const key = String(keyFn(item));
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(item);
+  }
+  return out;
 }
 
 function MixFusion({ demandLocalPct, demandFlowPct, revenueLocalPct, revenueFlowPct }) {
@@ -586,6 +600,294 @@ function ExperimentSankey({ rows, hostAirline, mlSignals }) {
         </div>
       </div>
     </div>
+  );
+}
+
+function ErrorHeatmap({ rows }) {
+  const top = rows.slice().sort((a, b) => Math.abs(b.percentage_error) - Math.abs(a.percentage_error)).slice(0, 140);
+  const origins = [...new Set(top.map((r) => r.origin))].slice(0, 20);
+  const destinations = [...new Set(top.map((r) => r.destination))].slice(0, 20);
+  const xStep = 28;
+  const yStep = 22;
+  const width = Math.max(360, destinations.length * xStep + 120);
+  const height = Math.max(220, origins.length * yStep + 100);
+  const idxMap = new Map();
+  for (const r of top) idxMap.set(`${r.origin}|${r.destination}`, r);
+  const colorFor = (v) => {
+    const cap = Math.max(-0.45, Math.min(0.45, Number(v || 0)));
+    if (cap >= 0) return `rgba(220, 38, 38, ${0.15 + Math.abs(cap) * 1.5})`;
+    return `rgba(2, 132, 199, ${0.15 + Math.abs(cap) * 1.5})`;
+  };
+  if (!top.length) return <div className="empty-state">No route data for heatmap.</div>;
+  return (
+    <div className="diag-svg-wrap">
+      <svg viewBox={`0 0 ${width} ${height}`} className="diag-svg" width={width} height={height}>
+        <text x="12" y="20" className="diag-axis-label">Origin</text>
+        <text x={width - 148} y={20} className="diag-axis-label">Destination</text>
+        {origins.map((o, i) => <text key={o} x="8" y={55 + i * yStep} className="diag-tick">{o}</text>)}
+        {destinations.map((d, j) => <text key={d} x={96 + j * xStep} y="40" className="diag-tick" transform={`rotate(-35 ${96 + j * xStep} 40)`}>{d}</text>)}
+        {origins.map((o, i) =>
+          destinations.map((d, j) => {
+            const row = idxMap.get(`${o}|${d}`);
+            const val = row ? row.percentage_error : 0;
+            return (
+              <rect
+                key={`${o}-${d}`}
+                x={80 + j * xStep}
+                y={46 + i * yStep}
+                width={xStep - 2}
+                height={yStep - 2}
+                fill={row ? colorFor(val) : "rgba(148, 163, 184, 0.12)"}
+                stroke="rgba(148, 163, 184, 0.2)"
+              />
+            );
+          }),
+        )}
+      </svg>
+    </div>
+  );
+}
+
+function ScatterPlot({ rows, xKey, yKey, xLabel, yLabel }) {
+  const data = rows.filter((r) => Number.isFinite(Number(r[xKey])) && Number.isFinite(Number(r[yKey])));
+  if (!data.length) return <div className="empty-state">Not enough data for scatter.</div>;
+  const xMin = Math.min(...data.map((r) => Number(r[xKey])));
+  const xMax = Math.max(...data.map((r) => Number(r[xKey])));
+  const yMin = Math.min(...data.map((r) => Number(r[yKey])));
+  const yMax = Math.max(...data.map((r) => Number(r[yKey])));
+  const width = 420;
+  const height = 250;
+  const pad = 34;
+  const scaleX = (x) => pad + ((x - xMin) / ((xMax - xMin) || 1)) * (width - pad * 2);
+  const scaleY = (y) => height - pad - ((y - yMin) / ((yMax - yMin) || 1)) * (height - pad * 2);
+  return (
+    <div className="diag-svg-wrap">
+      <svg viewBox={`0 0 ${width} ${height}`} className="diag-svg" width={width} height={height}>
+        <line x1={pad} y1={height - pad} x2={width - pad} y2={height - pad} className="diag-axis" />
+        <line x1={pad} y1={pad} x2={pad} y2={height - pad} className="diag-axis" />
+        <text x={width / 2 - 44} y={height - 8} className="diag-axis-label">{xLabel}</text>
+        <text x={8} y={16} className="diag-axis-label">{yLabel}</text>
+        {data.map((r) => (
+          <circle key={r.route_id} cx={scaleX(Number(r[xKey]))} cy={scaleY(Number(r[yKey]))} r="3.1" fill={Math.abs(Number(r.percentage_error || 0)) > 0.3 ? "#dc2626" : "#0284c7"} opacity="0.85" />
+        ))}
+      </svg>
+    </div>
+  );
+}
+
+function CompetitiveShareBars({ route }) {
+  const rows = route?.market_split || [];
+  if (!rows.length) return <div className="empty-state">No airline share split found for this route.</div>;
+  return (
+    <div className="diag-share-bars">
+      {rows.slice(0, 8).map((r) => (
+        <div key={r.airline} className="diag-share-row">
+          <div className="diag-share-airline">{r.airline}</div>
+          <div className="diag-share-track">
+            <div className="diag-share-pred" style={{ width: `${Math.max(0, Math.min(100, Number(r.predicted_share || 0) * 100))}%` }} />
+            <div className="diag-share-actual" style={{ width: `${Math.max(0, Math.min(100, Number(r.actual_share || 0) * 100))}%` }} />
+          </div>
+          <div className="diag-share-num">{formatPct(Number(r.predicted_share || 0) * 100, 1)} / {formatPct(Number(r.actual_share || 0) * 100, 1)}</div>
+        </div>
+      ))}
+      <div className="diag-mini-note">Predicted / Actual share (Actual proxied from demand-share where required)</div>
+    </div>
+  );
+}
+
+function WaterfallApprox({ route }) {
+  if (!route) return <div className="empty-state">Select a route for decomposition.</div>;
+  const parts = buildRouteWaterfallContributions(route);
+  const maxAbs = Math.max(...parts.map((p) => Math.abs(Number(p.value || 0))), 1);
+  return (
+    <div className="diag-waterfall">
+      {parts.map((p) => (
+        <div key={p.key} className="diag-wf-row">
+          <div className="diag-wf-label">{p.label}</div>
+          <div className="diag-wf-bar-wrap">
+            <div className={`diag-wf-bar ${Number(p.value || 0) >= 0 ? "pos" : "neg"}`} style={{ width: `${Math.max(2, Math.abs(Number(p.value || 0)) / maxAbs * 100)}%` }} />
+          </div>
+          <div className="diag-wf-val">{formatNumber(p.value, 1)}</div>
+        </div>
+      ))}
+      <div className="diag-mini-note">Approximate decomposition (transparent proxy, not exact logistic attribution).</div>
+    </div>
+  );
+}
+
+function CalibrationDiagnosticsPanel({ odRows, bundle, hostAirline }) {
+  const [warningPct, setWarningPct] = useState(defaultDiagnosticsConfig.warningPctError);
+  const [criticalPct, setCriticalPct] = useState(defaultDiagnosticsConfig.criticalPctError);
+  const [alphaBlend, setAlphaBlend] = useState(defaultDiagnosticsConfig.alphaBlend);
+  const [selectedRoute, setSelectedRoute] = useState("");
+  const [airlineFilter, setAirlineFilter] = useState("ALL");
+  const config = useMemo(() => ({ ...defaultDiagnosticsConfig, warningPctError: warningPct, criticalPctError: criticalPct, alphaBlend }), [warningPct, criticalPct, alphaBlend]);
+
+  const diagnostics = useMemo(() => {
+    try {
+      return computeDiagnosticsDataset({
+        odRows,
+        level2Rows: bundle?.level2_od_airline_share_summary || [],
+        priorRows: bundle?.route_calibration_priors || [],
+        mlSignals: bundle?.ml_signals || null,
+        hostAirline,
+        config,
+      });
+    } catch (error) {
+      return {
+        routes: [],
+        flagged: [],
+        tables: { overpredicted: [], underpredicted: [], shareMisalloc: [] },
+        summary: { before: { mape: 0, wmape: 0, rmse: 0 }, after: { mape: 0, wmape: 0, rmse: 0 } },
+        correctedRows: [],
+        routeLevelModelSuggestions: [],
+        segmentLevelModelSuggestions: [],
+        overallCoeffSuggestions: [],
+        renderError: String(error?.message || error || "Unknown diagnostics error"),
+      };
+    }
+  }, [odRows, bundle, hostAirline, config]);
+
+  const routesFiltered = useMemo(() => {
+    const rows = diagnostics.routes || [];
+    if (airlineFilter === "ALL") return rows;
+    return rows.filter((r) => String(r.airline || "") === airlineFilter);
+  }, [diagnostics.routes, airlineFilter]);
+  const routeForDrill = useMemo(() => routesFiltered.find((r) => r.route_id === selectedRoute) || routesFiltered[0] || null, [routesFiltered, selectedRoute]);
+  const summary = diagnostics.summary || {};
+
+  useEffect(() => {
+    if (!routesFiltered.length) return;
+    if (!selectedRoute || !routesFiltered.some((r) => r.route_id === selectedRoute)) {
+      setSelectedRoute(routesFiltered[0].route_id);
+    }
+  }, [routesFiltered, selectedRoute]);
+
+  return (
+    <Stack className="diag-root" gap="sm">
+      {diagnostics.renderError ? (
+        <Paper withBorder radius="md" p="md">
+          <Title order={4}>Diagnostics Render Warning</Title>
+          <Text c="dimmed" mt={6}>
+            Diagnostics fallback mode is active for this workset: {diagnostics.renderError}
+          </Text>
+        </Paper>
+      ) : null}
+      <SimpleGrid cols={{ base: 1, sm: 2, lg: 5 }} spacing="sm">
+        <Paper withBorder radius="md" p="sm">
+          <Text size="xs" fw={600}>Warning Threshold ({formatPct(warningPct * 100, 0)})</Text>
+          <Slider min={0.05} max={0.3} step={0.01} value={warningPct} onChange={setWarningPct} />
+        </Paper>
+        <Paper withBorder radius="md" p="sm">
+          <Text size="xs" fw={600}>Critical Threshold ({formatPct(criticalPct * 100, 0)})</Text>
+          <Slider min={0.15} max={0.6} step={0.01} value={criticalPct} onChange={setCriticalPct} />
+        </Paper>
+        <Paper withBorder radius="md" p="sm">
+          <Text size="xs" fw={600}>Alpha Blend ({alphaBlend.toFixed(2)})</Text>
+          <Slider min={0.3} max={0.95} step={0.01} value={alphaBlend} onChange={setAlphaBlend} />
+        </Paper>
+        <Paper withBorder radius="md" p="sm">
+          <Select
+            label="Airline"
+            data={[{ value: "ALL", label: "All" }, { value: hostAirline, label: hostAirline }]}
+            value={airlineFilter}
+            onChange={(v) => setAirlineFilter(v || "ALL")}
+          />
+        </Paper>
+        <Paper withBorder radius="md" p="sm">
+          <Select
+            label="Route Drilldown"
+            searchable
+            data={routesFiltered.map((r) => ({ value: r.route_id, label: r.route_id }))}
+            value={selectedRoute || null}
+            onChange={(v) => setSelectedRoute(v || "")}
+          />
+        </Paper>
+      </SimpleGrid>
+
+      <Group grow>
+        <Paper withBorder radius="md" p="sm"><Text size="xs" c="dimmed">MAPE</Text><Title order={4}>{formatPct(Number(summary?.before?.mape || 0) * 100, 1)}</Title></Paper>
+        <Paper withBorder radius="md" p="sm"><Text size="xs" c="dimmed">WMAPE</Text><Title order={4}>{formatPct(Number(summary?.before?.wmape || 0) * 100, 1)}</Title></Paper>
+        <Paper withBorder radius="md" p="sm"><Text size="xs" c="dimmed">RMSE</Text><Title order={4}>{formatNumber(summary?.before?.rmse || 0, 1)}</Title></Paper>
+        <Paper withBorder radius="md" p="sm"><Text size="xs" c="dimmed">After WMAPE</Text><Title order={4}>{formatPct(Number(summary?.after?.wmape || 0) * 100, 1)}</Title></Paper>
+        <Paper withBorder radius="md" p="sm"><Text size="xs" c="dimmed">Flagged Routes</Text><Title order={4}>{(diagnostics.flagged || []).length}</Title></Paper>
+      </Group>
+
+      <div className="diag-grid two">
+        <div className="diag-card"><h3>O&D Error Heatmap</h3><ErrorHeatmap rows={routesFiltered} /></div>
+        <div className="diag-card"><h3>Competitive Misallocation ({routeForDrill?.route_id || "\u2014"})</h3><CompetitiveShareBars route={routeForDrill} /></div>
+      </div>
+
+      <div className="diag-grid three">
+        <div className="diag-card"><h3>Residual vs Distance</h3><ScatterPlot rows={routesFiltered} xKey="distance" yKey="percentage_error" xLabel="Distance" yLabel="% Error" /></div>
+        <div className="diag-card"><h3>Residual vs Actual Pax</h3><ScatterPlot rows={routesFiltered} xKey="actual_pax" yKey="percentage_error" xLabel="Actual Pax" yLabel="% Error" /></div>
+        <div className="diag-card"><h3>Residual vs Market Share</h3><ScatterPlot rows={routesFiltered} xKey="predicted_market_share" yKey="share_error" xLabel="Pred Share" yLabel="Share Error" /></div>
+      </div>
+
+      <div className="diag-grid two">
+        <div className="diag-card">
+          <h3>Route Decomposition ({routeForDrill?.route_id || "\u2014"})</h3>
+          <WaterfallApprox route={routeForDrill} />
+        </div>
+        <div className="diag-card">
+          <h3>Fix Recommendations</h3>
+          <div className="diag-recs">
+            {(routeForDrill?.recommendations || []).map((r, idx) => (
+              <div key={idx} className="diag-rec-item">
+                <div><strong>Reason:</strong> {r.reason}</div>
+                <div><strong>Action:</strong> {r.action}</div>
+                <div><strong>Track:</strong> {r.metric}</div>
+                <div><strong>Confidence:</strong> {(Number(r.confidence || 0) * 100).toFixed(0)}%</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      <div className="diag-grid two">
+        <Paper withBorder radius="md" p="sm" className="diag-card">
+          <Title order={4} mb={8}>Top Over/Under Predicted</Title>
+          <ScrollArea h={360}>
+            <MantineTable striped highlightOnHover withTableBorder withColumnBorders>
+              <MantineTable.Thead><MantineTable.Tr><MantineTable.Th>Route</MantineTable.Th><MantineTable.Th>% Error</MantineTable.Th><MantineTable.Th>Type</MantineTable.Th><MantineTable.Th>Severity</MantineTable.Th></MantineTable.Tr></MantineTable.Thead>
+              <MantineTable.Tbody>
+                {[...(diagnostics.tables?.overpredicted || []).slice(0, 8), ...(diagnostics.tables?.underpredicted || []).slice(0, 8)].map((r) => (
+                  <MantineTable.Tr key={`${r.route_id}-${r.percentage_error}`}>
+                    <MantineTable.Td><button className="diag-link-btn" onClick={() => setSelectedRoute(r.route_id)}>{r.route_id}</button></MantineTable.Td>
+                    <MantineTable.Td>{formatPct(Number(r.percentage_error || 0) * 100, 1)}</MantineTable.Td>
+                    <MantineTable.Td>{r.abnormality_type}</MantineTable.Td>
+                    <MantineTable.Td><Badge color={r.severity === "critical" ? "red" : r.severity === "warning" ? "yellow" : "green"} variant="light">{r.severity}</Badge></MantineTable.Td>
+                  </MantineTable.Tr>
+                ))}
+              </MantineTable.Tbody>
+            </MantineTable>
+          </ScrollArea>
+        </Paper>
+        <Paper withBorder radius="md" p="sm" className="diag-card">
+          <Title order={4} mb={8}>Logit Suggestions: Overall / Segment / Route</Title>
+          <ScrollArea h={360}>
+            <MantineTable striped highlightOnHover withTableBorder withColumnBorders>
+              <MantineTable.Thead><MantineTable.Tr><MantineTable.Th>Level</MantineTable.Th><MantineTable.Th>Entity</MantineTable.Th><MantineTable.Th>Coeff</MantineTable.Th><MantineTable.Th>Delta</MantineTable.Th></MantineTable.Tr></MantineTable.Thead>
+              <MantineTable.Tbody>
+                {(diagnostics.overallCoeffSuggestions || []).slice(0, 6).map((r) => (
+                  <MantineTable.Tr key={`ov-${r.coeff}`}><MantineTable.Td>Overall</MantineTable.Td><MantineTable.Td>All</MantineTable.Td><MantineTable.Td>{r.coeff}</MantineTable.Td><MantineTable.Td>{r.delta >= 0 ? "+" : ""}{Number(r.delta || 0).toFixed(4)}</MantineTable.Td></MantineTable.Tr>
+                ))}
+                {(diagnostics.segmentLevelModelSuggestions || []).slice(0, 8).flatMap((s) =>
+                  (s.coeff_suggestions || []).slice(0, 2).map((c) => (
+                    <MantineTable.Tr key={`sg-${s.segment}-${c.coeff}`}><MantineTable.Td>Segment</MantineTable.Td><MantineTable.Td>{s.segment}</MantineTable.Td><MantineTable.Td>{c.coeff}</MantineTable.Td><MantineTable.Td>{c.delta >= 0 ? "+" : ""}{Number(c.delta || 0).toFixed(4)}</MantineTable.Td></MantineTable.Tr>
+                  )),
+                )}
+                {(diagnostics.routeLevelModelSuggestions || []).slice(0, 10).flatMap((r) =>
+                  (r.coeff_suggestions || []).slice(0, 1).map((c) => (
+                    <MantineTable.Tr key={`rt-${r.od}-${c.coeff}`}><MantineTable.Td>Route</MantineTable.Td><MantineTable.Td>{r.od}</MantineTable.Td><MantineTable.Td>{c.coeff}</MantineTable.Td><MantineTable.Td>{c.delta >= 0 ? "+" : ""}{Number(c.delta || 0).toFixed(4)}</MantineTable.Td></MantineTable.Tr>
+                  )),
+                )}
+              </MantineTable.Tbody>
+            </MantineTable>
+          </ScrollArea>
+        </Paper>
+      </div>
+    </Stack>
   );
 }
 
@@ -1048,7 +1350,7 @@ export default function AppSimple() {
     }
   }, [odOptions, selectedOd]);
 
-  const hostPax = (bundle?.level1_host_od_summary || []).reduce((sum, row) => sum + Number(row.weekly_pax_est || 0), 0);
+  const hostPax = (bundle?.level1_host_od_summary || []).reduce((sum, row) => sum + Number(row.apm_weekly_pax_est || row.weekly_pax_est || 0), 0);
   const hostSeats = (bundle?.level1_host_od_summary || []).reduce((sum, row) => sum + Number(row.weekly_seats_est || 0), 0);
   const avgLoadFactor = hostSeats ? (hostPax / hostSeats) * 100 : 0;
   const odNetworkRows = useMemo(() => {
@@ -1065,12 +1367,16 @@ export default function AppSimple() {
         marketTraffic: 0,
         hostElapsedWeighted: 0,
         hostTraffic: 0,
+        hostTrafficSharePct: 0,
+        hostDemandSharePct: 0,
       };
       item.marketElapsedWeighted += avgElapsed * traffic;
       item.marketTraffic += traffic;
       if (Boolean(r.is_host_airline)) {
         item.hostElapsedWeighted += avgElapsed * traffic;
         item.hostTraffic += traffic;
+        item.hostTrafficSharePct = Number(r.traffic_share_pct_est || 0);
+        item.hostDemandSharePct = Number(r.demand_share_pct_est || 0);
       }
       level2ByOd.set(od, item);
     }
@@ -1112,11 +1418,14 @@ export default function AppSimple() {
         ...row,
         weeklyPax: Number(level1?.weekly_pax_est || row.totalPax || 0),
         weeklySeats: Number(level1?.weekly_seats_est || 0),
-        loadFactorPct: Number(level1?.load_factor_pct_est || 0),
+        loadFactorPct: Number(level1?.apm_load_factor_pct_est || level1?.load_factor_pct_est || 0),
         absPaxDiffPct: Number(level1?.abs_total_pax_diff_pct_est || 0),
         absPlfDiffPct: Number(level1?.abs_plf_diff_pct_est || 0),
         flowPddPct: Number(level1?.flow_pdd_pct_est || 0),
         flowApmPct: Number(level1?.flow_apm_pct_est || 0),
+        hostSharePct: Number(level1?.host_share_of_market_demand_pct_est || 0),
+        predictedMarketSharePct: Number(level2?.hostTrafficSharePct || level1?.host_share_of_market_demand_pct_est || 0),
+        actualMarketSharePct: Number(level2?.hostDemandSharePct || 0),
         elapsedTimeDeltaPct,
         localDemandPct: (row.localPax / demandDenominator) * 100,
         flowDemandPct: (row.flowPax / demandDenominator) * 100,
@@ -1342,57 +1651,74 @@ export default function AppSimple() {
 
   // Flight View: host flights (from bundle, filtered)
   const fvHostFlights = useMemo(() =>
-    (bundle?.level3_host_flight_summary || [])
+    dedupeBy((bundle?.level3_host_flight_summary || [])
       .filter((r) => {
         const orig = normalizeCode(r.orig);
         const dest = normalizeCode(r.dest);
         return (!fvOrig || orig === fvOrig) && (!fvDest || dest === fvDest);
       })
-      .map((r) => ({
+      .map((r) => {
+        const weeklyDeps = Number(r.weekly_departures || 0);
+        const seatsPerDep = Number(r.avg_seats_per_departure || 0);
+        const observedPax = Number(r.weekly_pax_est || 0);
+        const weeklySeats = seatsPerDep * weeklyDeps;
+        const lfFromObserved = weeklySeats > 0 ? (observedPax / weeklySeats) * 100 : 0;
+        const reportedLf = Number(r.load_factor_pct_est ?? 0);
+        return {
         isHost: true,
         key: `${hostAirline}-${r.flight_number}-${r.orig}-${r.dest}`,
         airline: hostAirline,
         flightNumber: r.flight_number,
         orig: normalizeCode(r.orig), dest: normalizeCode(r.dest),
         freq: null,
-        weeklyDeps: r.weekly_departures,
+        weeklyDeps,
         equipment: r.equipment,
-        seatsPerDep: r.avg_seats_per_departure,
+        seatsPerDep,
         deptTime: null, arvlTime: null, elapTime: null,
-        observedPax: r.weekly_pax_est,
+        observedPax,
         totalPax: r.spill_total_pax_est,
         localPax: r.spill_local_pax_est,
         flowPax: r.spill_flow_pax_est,
-        loadFactor: r.load_factor_pct_est,
+        loadFactor: Number.isFinite(reportedLf) && reportedLf > 0 ? reportedLf : lfFromObserved,
+        weeklySeats,
         revenue: r.spill_total_revenue_est,
         avgFare: r.spill_avg_total_fare_est,
-      })),
+      };
+      }), (r) => r.key),
   [bundle, fvOrig, fvDest, hostAirline]);
 
   // Flight View: competitor flights (from fetched data for selected OD)
   const fvCompFlights = useMemo(() =>
-    fvCompFlightRows
+    dedupeBy(fvCompFlightRows
       .filter((r) => {
         const aln = String(r["Flt Desg"] || "").trim().split(" ")[0];
         return aln !== hostAirline;
       })
-      .map((r) => ({
+      .map((r) => {
+        const weeklyDeps = countFreqDays(r["Freq"]);
+        const weeklySeats = Number(r["Seats"] || 0);
+        const seatsPerDep = weeklyDeps > 0 ? weeklySeats / weeklyDeps : weeklySeats;
+        const observedPax = Number(r["Total Traffic"] || 0);
+        const lfFromObserved = weeklySeats > 0 ? (observedPax / weeklySeats) * 100 : 0;
+        return {
         isHost: false,
         key: `comp-${r["Flt Desg"]}-${r["Dept Sta"]}-${r["Arvl Sta"]}`,
         airline: String(r["Flt Desg"] || "").trim().split(" ")[0],
         flightNumber: String(r["Flt Desg"] || "").trim(),
         orig: normalizeCode(r["Dept Sta"]), dest: normalizeCode(r["Arvl Sta"]),
         freq: r["Freq"],
-        weeklyDeps: countFreqDays(r["Freq"]),
+        weeklyDeps,
         equipment: r["Subfleet"],
-        seatsPerDep: Number(r["Seats"] || 0),
+        seatsPerDep,
         deptTime: r["Dept Time"], arvlTime: r["Arvl Time"], elapTime: r["Elap Time"],
-        observedPax: Number(r["Total Traffic"] || 0),
+        observedPax,
         totalPax: null, localPax: null, flowPax: null,
-        loadFactor: Number(r["Load Factor (%)"] || 0),
+        loadFactor: lfFromObserved,
+        weeklySeats,
         revenue: Number(r["Pax Revenue($)"] || 0),
         avgFare: null,
-      })),
+      };
+      }), (r) => r.key),
   [fvCompFlightRows, hostAirline]);
 
   // Flight View: combined and filtered
@@ -1418,8 +1744,16 @@ export default function AppSimple() {
     const compObservedPax = fvCompRows.reduce((sum, f) => sum + Number(f.observedPax || 0), 0);
     const hostRevenue = fvHostRows.reduce((sum, f) => sum + Number(f.revenue || 0), 0);
     const compRevenue = fvCompRows.reduce((sum, f) => sum + Number(f.revenue || 0), 0);
-    const hostLfAvg = fvHostRows.length ? fvHostRows.reduce((sum, f) => sum + Number(f.loadFactor || 0), 0) / fvHostRows.length : 0;
-    const compLfAvg = fvCompRows.length ? fvCompRows.reduce((sum, f) => sum + Number(f.loadFactor || 0), 0) / fvCompRows.length : 0;
+    const hostLfAvg = (() => {
+      const seats = fvHostRows.reduce((sum, f) => sum + Number(f.weeklySeats || (Number(f.seatsPerDep || 0) * Number(f.weeklyDeps || 0))), 0);
+      const pax = fvHostRows.reduce((sum, f) => sum + Number(f.observedPax || 0), 0);
+      return seats > 0 ? (pax / seats) * 100 : 0;
+    })();
+    const compLfAvg = (() => {
+      const seats = fvCompRows.reduce((sum, f) => sum + Number(f.weeklySeats || (Number(f.seatsPerDep || 0) * Number(f.weeklyDeps || 0))), 0);
+      const pax = fvCompRows.reduce((sum, f) => sum + Number(f.observedPax || 0), 0);
+      return seats > 0 ? (pax / seats) * 100 : 0;
+    })();
     const hostFareAvg = safeRatio(hostRevenue, hostObservedPax);
     const compFareAvg = safeRatio(compRevenue, compObservedPax);
 
@@ -1903,9 +2237,14 @@ export default function AppSimple() {
           {activeTab === "experiment" ? (
   <div className="tab-content">
     <ExperimentSankey
-      rows={odNetworkRowsFiltered.length ? odNetworkRowsFiltered : odNetworkRows}
+      rows={odNetworkRows}
       hostAirline={hostAirline}
       mlSignals={bundle?.ml_signals || null}
+    />
+    <CalibrationDiagnosticsPanel
+      odRows={odNetworkRowsFiltered.length ? odNetworkRowsFiltered : odNetworkRows}
+      bundle={bundle}
+      hostAirline={hostAirline}
     />
   </div>
 ) : null}

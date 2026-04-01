@@ -1,5 +1,8 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
+import { MantineProvider } from "@mantine/core";
+import "@mantine/core/styles.css";
+import "@mantine/charts/styles.css";
 import App from "./AppSimple.jsx";
 import "./styles.css";
 import "./vision.css";
@@ -29,7 +32,30 @@ window.addEventListener("error", (e) => {
 console.log("[main.jsx] Starting React mount...");
 ReactDOM.createRoot(document.getElementById("root")).render(
   <React.StrictMode>
-    <App />
+    <MantineProvider
+      defaultColorScheme="light"
+      theme={{
+        primaryColor: "cyan",
+        fontFamily: "Inter, Segoe UI, Roboto, sans-serif",
+        white: "#ffffff",
+        colors: {
+          slate: [
+            "#f8fafc",
+            "#f1f5f9",
+            "#e2e8f0",
+            "#cbd5e1",
+            "#94a3b8",
+            "#64748b",
+            "#475569",
+            "#334155",
+            "#1e293b",
+            "#0f172a",
+          ],
+        },
+      }}
+    >
+      <App />
+    </MantineProvider>
   </React.StrictMode>,
 );
 console.log("[main.jsx] ReactDOM.createRoot().render() called");
