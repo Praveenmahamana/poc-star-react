@@ -6,7 +6,8 @@
   "scripts": {
     "sync-data": "node scripts/sync-data.mjs",
     "dev": "npm run serve:dist",
-    "build": "npm run sync-data && vite build",
+    "build": "npm run sync-data && vite build && node scripts/copy-public-to-dist.mjs",
+    "check:frg:parity": "python scripts/check_frg_parity.py --frg ../frg.xlsx --workset-dir ../WORKSET12139 --host-airline S5 --corrections public/data/worksets/frg_corrections.json --output ../frg_parity_report.json",
     "export:network": "node scripts/export-network-html.mjs",
     "export:dashboard": "node scripts/export-dashboard-html.mjs",
     "preview": "npm run serve:dist",

@@ -77,6 +77,41 @@ function safeRemove(path) {
   }
 }
 
+function listFilesRecursive(dir, base = dir) {
+  const items = [];
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const fullPath = resolve(dir, entry.name);
+    if (entry.isDirectory()) {
+      items.push(...listFilesRecursive(fullPath, base));
+    } else if (entry.isFile()) {
+      const relPath = fullPath.slice(base.length + 1).replace(/\\/g, "/");
+      items.push({ fullPath, relPath, size: statSync(fullPath).size });
+    }
+  }
+  return items;
+}
+
+function copyWorksetRawFiles(worksetDir, targetRawDir) {
+  const filesDir = resolve(targetRawDir, "files");
+  safeRemove(targetRawDir);
+  mkdirSync(filesDir, { recursive: true });
+  const files = listFilesRecursive(worksetDir);
+  for (const file of files) {
+    const outPath = resolve(filesDir, file.relPath);
+    mkdirSync(dirname(outPath), { recursive: true });
+    copyFileSync(file.fullPath, outPath);
+  }
+  writeFileSync(
+    resolve(targetRawDir, "manifest.json"),
+    JSON.stringify({
+      generated_at: new Date().toISOString(),
+      file_count: files.length,
+      files: files.map((f) => ({ path: f.relPath, size: f.size })),
+    }),
+    "utf8",
+  );
+}
+
 mkdirSync(publicTargetDir, { recursive: true });
 mkdirSync(srcTargetDir, { recursive: true });
 mkdirSync(worksetsDir, { recursive: true });
@@ -111,6 +146,7 @@ for (const worksetId of allWorksets) {
 
   safeRemove(resolve(wDir, "flight-report-db"));
   safeRemove(resolve(wDir, "itinerary-report-db"));
+  copyWorksetRawFiles(worksetDir, resolve(wDir, "raw"));
 
   let label = worksetId;
   const profilePath = resolve(outputDir, "workset_profile.json");

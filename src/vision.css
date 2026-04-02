@@ -29,6 +29,36 @@ body {
   padding: clamp(10px, 1.8vw, 24px);
 }
 
+.app-shell-vision.sidebar-hidden {
+  grid-template-columns: minmax(0, 1fr) !important;
+}
+
+.sidebar-toggle-btn {
+  position: fixed;
+  top: 16px;
+  left: 16px;
+  z-index: 1200;
+  width: 40px;
+  height: 40px;
+  border: 1px solid rgba(145, 158, 171, 0.28);
+  border-radius: 10px;
+  background: #ffffff;
+  box-shadow: 0 8px 18px -10px rgba(15, 23, 42, 0.35);
+  display: inline-flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+}
+
+.sidebar-toggle-btn span {
+  width: 18px;
+  height: 2px;
+  border-radius: 999px;
+  background: #334155;
+}
+
 .sidebar,
 .topbar,
 .hero-copy,
@@ -59,6 +89,61 @@ body {
   height: 100%;
   min-height: 0;
   overflow: auto;
+  transition: transform 220ms ease, opacity 220ms ease, width 220ms ease;
+  min-width: 0;
+}
+
+.app-shell-vision.sidebar-hidden .sidebar {
+  position: fixed;
+  top: 10px;
+  left: 10px;
+  bottom: 10px;
+  width: min(84vw, 340px);
+  height: auto;
+  z-index: 1300;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateX(-110%);
+}
+
+.app-shell-vision.sidebar-hidden .main-shell {
+  grid-column: 1 / -1;
+  width: 100%;
+}
+
+.sidebar-overlay {
+  display: none;
+}
+
+.app-shell-vision.sidebar-mobile {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.app-shell-vision.sidebar-mobile .sidebar {
+  position: fixed;
+  top: 10px;
+  left: 10px;
+  bottom: 10px;
+  width: min(84vw, 340px);
+  height: auto;
+  z-index: 1300;
+  transform: translateX(-110%);
+  opacity: 0;
+  pointer-events: none;
+}
+
+.app-shell-vision.sidebar-mobile.sidebar-open .sidebar {
+  transform: translateX(0);
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.app-shell-vision.sidebar-mobile .sidebar-overlay {
+  display: block;
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.3);
+  z-index: 1250;
 }
 
 .sidebar-brand {
@@ -137,19 +222,23 @@ body {
 
 .folder-tabs {
   display: flex;
-  gap: 8px;
+  gap: 10px;
   align-items: flex-end;
   margin-bottom: 10px;
-  padding: 0 6px;
+  padding: 6px 8px;
   overflow-x: auto;
+  border-radius: 16px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.7), rgba(241, 245, 249, 0.75));
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8);
 }
 
 .folder-tab {
-  border: 1px solid rgba(145, 158, 171, 0.24);
-  background: linear-gradient(180deg, #f8fafc, #eef2f7);
-  color: #42526e;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  background: linear-gradient(180deg, #ffffff, #edf2f8);
+  color: #334155;
   border-radius: 999px;
-  padding: 8px 14px;
+  padding: 8px 16px;
   font-weight: 700;
   letter-spacing: 0.02em;
   cursor: pointer;
@@ -158,7 +247,24 @@ body {
   align-items: center;
   gap: 8px;
   transform-origin: bottom;
-  transition: transform 140ms ease, background 140ms ease, color 140ms ease, box-shadow 140ms ease;
+  position: relative;
+  overflow: hidden;
+  box-shadow:
+    0 6px 14px -10px rgba(30, 41, 59, 0.45),
+    inset 0 1px 0 rgba(255, 255, 255, 0.95);
+  transition: transform 170ms ease, background 170ms ease, color 170ms ease, box-shadow 170ms ease, border-color 170ms ease;
+}
+
+.folder-tab::after {
+  content: "";
+  position: absolute;
+  top: -30%;
+  left: -35%;
+  width: 50%;
+  height: 160%;
+  transform: rotate(22deg);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.55), rgba(255, 255, 255, 0));
+  pointer-events: none;
 }
 
 .folder-tab-icon {
@@ -168,28 +274,43 @@ body {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  background: rgba(255, 255, 255, 0.78);
-  border: 1px solid rgba(145, 158, 171, 0.24);
+  background: rgba(255, 255, 255, 0.92);
+  border: 1px solid rgba(148, 163, 184, 0.24);
   font-size: 0.86rem;
   line-height: 1;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.85);
 }
 
 .folder-tab:hover {
-  transform: translateY(-1px);
-  background: linear-gradient(180deg, #ffffff, #f4f6f8);
-  color: #212b36;
+  transform: translateY(-2px);
+  background: linear-gradient(180deg, #ffffff, #e8eef6);
+  color: #0f172a;
+  border-color: rgba(59, 130, 246, 0.3);
+  box-shadow:
+    0 10px 20px -12px rgba(30, 41, 59, 0.6),
+    inset 0 1px 0 rgba(255, 255, 255, 0.95);
 }
 
 .folder-tab.active {
-  background: linear-gradient(180deg, rgba(32, 101, 209, 0.2), rgba(32, 101, 209, 0.08));
-  color: #123b7a;
-  border-color: rgba(32, 101, 209, 0.35);
-  box-shadow: 0 8px 18px -10px rgba(32, 101, 209, 0.45), inset 0 -1px 0 rgba(32, 101, 209, 0.4);
+  background: linear-gradient(180deg, #dbeafe, #bfdbfe);
+  color: #0b3a78;
+  border-color: rgba(37, 99, 235, 0.45);
+  box-shadow:
+    inset 0 2px 6px rgba(59, 130, 246, 0.24),
+    0 10px 20px -13px rgba(37, 99, 235, 0.65);
+  transform: translateY(-1px);
 }
 
 .folder-tab.active .folder-tab-icon {
-  background: rgba(32, 101, 209, 0.14);
-  border-color: rgba(32, 101, 209, 0.35);
+  background: rgba(59, 130, 246, 0.22);
+  border-color: rgba(37, 99, 235, 0.38);
+}
+
+.folder-tab:active {
+  transform: translateY(0);
+  box-shadow:
+    inset 0 2px 5px rgba(30, 41, 59, 0.18),
+    0 3px 8px -7px rgba(30, 41, 59, 0.45);
 }
 
 .sidebar-kpi-wrap {
