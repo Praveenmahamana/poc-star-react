@@ -598,10 +598,12 @@ a {
   border: 1px solid var(--border-color);
   border-radius: 12px;
   overflow: auto;
+  max-width: 100%;
 }
 
 table {
-  width: 100%;
+  width: max-content;
+  min-width: 100%;
   border-collapse: collapse;
   text-align: left;
 }
@@ -615,6 +617,7 @@ thead th {
   letter-spacing: 0.05em;
   padding: 16px;
   border-bottom: 1px solid var(--border-color);
+  white-space: nowrap;
 }
 
 tbody td {
@@ -622,6 +625,7 @@ tbody td {
   font-size: 0.9rem;
   border-bottom: 1px solid var(--border-color);
   color: var(--text-primary);
+  white-space: nowrap;
 }
 
 tbody tr:last-child td {
@@ -2397,6 +2401,18 @@ input[type=range] {
 .fv-kpi-fill.comp { background: #64748b; }
 
 .fv-table-wrap { margin-bottom: 16px; }
+.fv-table-wrap .table-shell {
+  overflow-x: auto;
+  overflow-y: auto;
+}
+.fv-wide-table {
+  min-width: 1900px;
+  width: max-content;
+}
+.fv-od-breakup-table {
+  min-width: 1120px;
+  width: max-content;
+}
 .fv-host-row td { background: rgba(32, 101, 209, 0.03); }
 .fv-comp-row td { background: transparent; }
 .fv-od-pill {
@@ -2432,6 +2448,28 @@ input[type=range] {
 .mix-fusion-track { display: flex; height: 8px; width: 100%; background: rgba(145, 158, 171, 0.2); border-radius: 999px; overflow: hidden; }
 .mix-fusion-local { background: rgba(16, 185, 129, 0.75); height: 100%; }
 .mix-fusion-flow { background: rgba(32, 101, 209, 0.75); height: 100%; }
+.rev-pie-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 110px;
+}
+.rev-pie-disc {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  border: 1px solid rgba(148, 163, 184, 0.42);
+}
+.rev-pie-labels {
+  display: flex;
+  gap: 6px;
+  font-size: 0.64rem;
+  color: var(--text-secondary);
+}
+.rev-pie-pct {
+  font-size: 0.62rem;
+  color: var(--text-secondary);
+}
 .fv-modal-backdrop {
   position: fixed;
   inset: 0;
@@ -2508,6 +2546,7 @@ input[type=range] {
 .odv-table-shell {
   max-height: 420px;
   overflow: auto;
+  max-width: 100%;
 }
 .odv-table-shell thead th {
   position: sticky;

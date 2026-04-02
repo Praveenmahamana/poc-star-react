@@ -3,14 +3,11 @@ import initSqlJs from "sql.js";
 import sqlWasmUrl from "sql.js/dist/sql-wasm.wasm?url";
 import { Badge, Group, Paper, ScrollArea, Select, SimpleGrid, Slider, Stack, Table as MantineTable, Text, Title } from "@mantine/core";
 import initialBundle from "./generated/dashboard_bundle.json";
-import MiroFishSimulatorTab from "./components/MiroFishSimulatorTab";
 
 const tabs = [
   { id: "summary", label: "Network", icon: "N" },
   { id: "flightView", label: "Flight View", icon: "F" },
   { id: "odView", label: "O&D View", icon: "OD" },
-  { id: "analysis", label: "Analysis", icon: "A" },
-  { id: "mirofish", label: "Parallel Simulation", icon: "PS" },
 ];
 
 function formatNumber(value, digits = 0) {
@@ -302,139 +299,6 @@ function pctToScore(pct) {
   return clamp(Number(pct || 0), 0, 100);
 }
 
-function buildStrategicRouteMetrics(odRows, level2Rows, hostAirline) {
-  const rows = Array.isArray(odRows) ? odRows : [];
-  const level2 = Array.isArray(level2Rows) ? level2Rows : [];
-  const host = normalizeCode(hostAirline);
-  const byOd = new Map();
-  for (const r of level2) {
-    const od = `${normalizeCode(r.orig)}-${normalizeCode(r.dest)}`;
-    const item = byOd.get(od) || [];
-    item.push({
-      carrier: normalizeCode(r.carrier),
-      trafficShare: Number(r.traffic_share_pct_est || r.demand_share_pct_est || 0),
-      demandShare: Number(r.demand_share_pct_est || 0),
-      revenueShare: Number(r.revenue_share_pct_est || 0),
-      totalDemand: Number(r.total_demand_est || 0),
-      totalTraffic: Number(r.total_traffic_est || 0),
-      totalRevenue: Number(r.total_revenue_est || 0),
-    });
-    byOd.set(od, item);
-  }
-
-  let minYield = 0;
-  let maxYield = 1;
-  let minDeps = 0;
-  let maxDeps = 1;
-  let minPax = 0;
-  let maxPax = 1;
-  let initialized = false;
-  for (const r of rows) {
-    const y = safeRatio(Number(r.totalRevenue || 0), Number(r.totalPax || 0));
-    const d = Number(r.weeklyDepartures || 0);
-    const p = Number(r.weeklyPax || 0);
-    if (!initialized) {
-      minYield = maxYield = y;
-      minDeps = maxDeps = d;
-      minPax = maxPax = p;
-      initialized = true;
-    } else {
-      if (y < minYield) minYield = y;
-      if (y > maxYield) maxYield = y;
-      if (d < minDeps) minDeps = d;
-      if (d > maxDeps) maxDeps = d;
-      if (p < minPax) minPax = p;
-      if (p > maxPax) maxPax = p;
-    }
-  }
-  minYield = Math.min(minYield, 0);
-  maxYield = Math.max(maxYield, 1);
-  minDeps = Math.min(minDeps, 0);
-  maxDeps = Math.max(maxDeps, 1);
-  minPax = Math.min(minPax, 0);
-  maxPax = Math.max(maxPax, 1);
-
-  const scored = rows.map((r) => {
-    const od = r.od;
-    const competitors = (byOd.get(od) || []).sort((a, b) => b.trafficShare - a.trafficShare);
-    const hostRow = competitors.find((c) => c.carrier === host);
-    const topCompetitor = competitors.find((c) => c.carrier !== host);
-    const hostTrafficShare = Number(hostRow?.trafficShare ?? r.hostSharePct ?? 0);
-    const topCompShare = Number(topCompetitor?.trafficShare ?? 0);
-    const shareGap = Math.max(0, topCompShare - hostTrafficShare);
-    const marketSize = Number(competitors.reduce((s, c) => s + c.totalDemand, 0) || r.weeklyPax || 0);
-    const routeYield = safeRatio(Number(r.totalRevenue || 0), Number(r.totalPax || 0));
-
-    const yieldScore = clamp(minMaxScale(routeYield, minYield, maxYield), 0, 100);
-    const lfScore = clamp(100 - Math.abs(Number(r.loadFactorPct || 0) - 82) * 1.8, 0, 100);
-    const depScore = clamp(minMaxScale(Number(r.weeklyDepartures || 0), minDeps, maxDeps), 0, 100);
-    const paxScore = clamp(minMaxScale(Number(r.weeklyPax || 0), minPax, maxPax), 0, 100);
-    const flowBalanceScore = clamp(100 - Math.abs(Number(r.flowApmPct || 0) - Number(r.flowPddPct || 0)) * 2.2, 0, 100);
-    const elapsedAdvScore = clamp(50 + (-Number(r.elapsedTimeDeltaPct || 0) * 2), 0, 100);
-    const reliabilityScore = clamp(100 - Math.abs(Number(r.absPaxDiffPct || 0)) * 2, 0, 100);
-    const plfStabilityScore = clamp(100 - Math.abs(Number(r.absPlfDiffPct || 0)) * 2.5, 0, 100);
-    const marketSizeScore = clamp(minMaxScale(marketSize, minPax, maxPax), 0, 100);
-    const entryOpportunityScore = clamp((shareGap * 2.2), 0, 100);
-    const captureEfficiencyScore = clamp(100 - Math.abs(Number(r.predictedMarketSharePct || 0) - Number(r.actualMarketSharePct || 0)) * 3.2, 0, 100);
-
-    const networkHubOptimization = clamp(
-      0.30 * depScore + 0.30 * paxScore + 0.20 * flowBalanceScore + 0.20 * elapsedAdvScore,
-      0, 100,
-    );
-    const hubConnectivitySpoke = clamp(
-      0.35 * pctToScore(r.flowDemandPct) + 0.25 * pctToScore(r.flowRevenuePct) + 0.20 * depScore + 0.20 * elapsedAdvScore,
-      0, 100,
-    );
-    const routeProfitabilityMarketShare = clamp(
-      0.45 * yieldScore + 0.30 * lfScore + 0.25 * pctToScore(hostTrafficShare),
-      0, 100,
-    );
-    const seasonalFlexibility = clamp(
-      0.40 * reliabilityScore + 0.35 * plfStabilityScore + 0.25 * flowBalanceScore,
-      0, 100,
-    );
-    const marketEntryFeasibility = clamp(
-      0.35 * entryOpportunityScore + 0.30 * marketSizeScore + 0.20 * yieldScore + 0.15 * depScore,
-      0, 100,
-    );
-    const competitorOverlapPenetration = clamp(
-      0.45 * pctToScore(hostTrafficShare) + 0.30 * clamp(100 - topCompShare, 0, 100) + 0.25 * captureEfficiencyScore,
-      0, 100,
-    );
-
-    const combinedStrategicScore = clamp(
-      0.16 * networkHubOptimization +
-      0.16 * hubConnectivitySpoke +
-      0.22 * routeProfitabilityMarketShare +
-      0.14 * seasonalFlexibility +
-      0.14 * marketEntryFeasibility +
-      0.18 * competitorOverlapPenetration,
-      0, 100,
-    );
-
-    return {
-      od,
-      orig: r.orig,
-      dest: r.dest,
-      marketSize,
-      yield: routeYield,
-      hostTrafficShare,
-      topCompShare,
-      shareGap,
-      networkHubOptimization,
-      hubConnectivitySpoke,
-      routeProfitabilityMarketShare,
-      seasonalFlexibility,
-      marketEntryFeasibility,
-      competitorOverlapPenetration,
-      combinedStrategicScore,
-    };
-  });
-
-  scored.sort((a, b) => b.combinedStrategicScore - a.combinedStrategicScore);
-  return scored;
-}
-
 function MixFusion({ demandLocalPct, demandFlowPct, revenueLocalPct, revenueFlowPct }) {
   return (
     <div className="mix-fusion">
@@ -452,6 +316,31 @@ function MixFusion({ demandLocalPct, demandFlowPct, revenueLocalPct, revenueFlow
           <div className="mix-fusion-flow" style={{ width: `${Math.max(0, Number(revenueFlowPct || 0))}%` }} />
         </div>
       </div>
+    </div>
+  );
+}
+
+function RevenueMixPieCell({ localRevenue, flowRevenue }) {
+  const local = Math.max(0, Number(localRevenue || 0));
+  const flow = Math.max(0, Number(flowRevenue || 0));
+  const total = local + flow;
+  const localPct = total > 0 ? (local / total) * 100 : 0;
+  const flowPct = total > 0 ? (flow / total) * 100 : 0;
+  return (
+    <div className="rev-pie-cell">
+      <div
+        className="rev-pie-disc"
+        style={{
+          background: total > 0
+            ? `conic-gradient(#0ea5e9 0 ${localPct}%, #f59e0b ${localPct}% 100%)`
+            : "#cbd5e1",
+        }}
+      />
+      <div className="rev-pie-labels">
+        <span>L {formatNumber(local, 0)}</span>
+        <span>F {formatNumber(flow, 0)}</span>
+      </div>
+      <div className="rev-pie-pct">{formatPct(localPct, 1)} / {formatPct(flowPct, 1)}</div>
     </div>
   );
 }
@@ -1033,6 +922,41 @@ export default function AppSimple() {
       level2ByOd.set(od, item);
     }
     const grouped = new Map();
+    const competitorByOd = new Map();
+    for (const row of allWorksetFlightRows || []) {
+      const parsed = parseFlightDesign(row["Flt Desg"]);
+      if (!parsed.airline || parsed.airline === normalizeCode(hostAirline)) continue;
+      const orig = normalizeCode(row["Dept Sta"]);
+      const dest = normalizeCode(row["Arvl Sta"]);
+      const key = `${orig}-${dest}`;
+      const compTotalPax = Number(row["Total Traffic"] || 0);
+      const compLocalPax = Number(row["Lcl Traffic"] || 0);
+      const compFlowPax = Math.max(0, compTotalPax - compLocalPax);
+      const compTotalDemand = Number(row["Total Demand"] || compTotalPax || 0);
+      const compLocalDemandDirect = Number(row["Lcl Demand"] || 0);
+      const compLocalDemandMktd = Number(row["Lcl Demand (Mktd)"] || 0);
+      const compLocalDemandCodeshared = Number(row["Lcl Demand (Codeshared)"] || 0);
+      const compLocalDemandCombined = compLocalDemandMktd + compLocalDemandCodeshared;
+      const compLocalDemand = compLocalDemandDirect > 0
+        ? compLocalDemandDirect
+        : (compLocalDemandCombined > 0 ? compLocalDemandCombined : Math.min(compTotalDemand, compLocalPax));
+      const compFlowDemand = Math.max(0, compTotalDemand - compLocalDemand);
+      const current = competitorByOd.get(key) || {
+        compLocalPax: 0,
+        compFlowPax: 0,
+        compTotalPax: 0,
+        compLocalDemand: 0,
+        compFlowDemand: 0,
+        compTotalDemand: 0,
+      };
+      current.compLocalPax += compLocalPax;
+      current.compFlowPax += compFlowPax;
+      current.compTotalPax += compTotalPax;
+      current.compLocalDemand += compLocalDemand;
+      current.compFlowDemand += compFlowDemand;
+      current.compTotalDemand += compTotalDemand;
+      competitorByOd.set(key, current);
+    }
     if (hostWorksetFlightRows.length) {
       for (const row of hostWorksetFlightRows) {
         const orig = normalizeCode(row["Dept Sta"]);
@@ -1041,6 +965,15 @@ export default function AppSimple() {
         const totalPax = Number(row["Total Traffic"] || 0);
         const localPax = Number(row["Lcl Traffic"] || 0);
         const flowPax = Math.max(0, totalPax - localPax);
+        const totalDemand = Number(row["Total Demand"] || totalPax || 0);
+        const localDemandDirect = Number(row["Lcl Demand"] || 0);
+        const localDemandMktd = Number(row["Lcl Demand (Mktd)"] || 0);
+        const localDemandCodeshared = Number(row["Lcl Demand (Codeshared)"] || 0);
+        const localDemandCombined = localDemandMktd + localDemandCodeshared;
+        const localDemand = localDemandDirect > 0
+          ? localDemandDirect
+          : (localDemandCombined > 0 ? localDemandCombined : Math.min(totalDemand, localPax));
+        const flowDemand = Math.max(0, totalDemand - localDemand);
         const totalRevenue = Number(row["Total Revenue($)"] || row["Pax Revenue($)"] || 0);
         const localRevenue = totalPax > 0 ? (localPax / totalPax) * totalRevenue : 0;
         const flowRevenue = Math.max(0, totalRevenue - localRevenue);
@@ -1053,6 +986,9 @@ export default function AppSimple() {
           localPax: 0,
           flowPax: 0,
           totalPax: 0,
+          localDemand: 0,
+          flowDemand: 0,
+          totalDemand: 0,
           localRevenue: 0,
           flowRevenue: 0,
           totalRevenue: 0,
@@ -1063,6 +999,9 @@ export default function AppSimple() {
         current.localPax += localPax;
         current.flowPax += flowPax;
         current.totalPax += totalPax;
+        current.localDemand += localDemand;
+        current.flowDemand += flowDemand;
+        current.totalDemand += totalDemand;
         current.localRevenue += localRevenue;
         current.flowRevenue += flowRevenue;
         current.totalRevenue += totalRevenue;
@@ -1081,6 +1020,9 @@ export default function AppSimple() {
         localPax: 0,
         flowPax: 0,
         totalPax: 0,
+        localDemand: 0,
+        flowDemand: 0,
+        totalDemand: 0,
         localRevenue: 0,
         flowRevenue: 0,
         totalRevenue: 0,
@@ -1090,6 +1032,9 @@ export default function AppSimple() {
       current.localPax += Number(row.spill_local_pax_est || 0);
       current.flowPax += Number(row.spill_flow_pax_est || 0);
       current.totalPax += Number(row.weekly_pax_est || row.spill_total_pax_est || 0);
+      current.localDemand += Number(row.spill_local_pax_est || 0);
+      current.flowDemand += Number(row.spill_flow_pax_est || 0);
+      current.totalDemand += Number(row.weekly_pax_est || row.spill_total_pax_est || 0);
       current.localRevenue += Number(row.spill_local_revenue_est || 0);
       current.flowRevenue += Number(row.spill_flow_revenue_est || 0);
       current.totalRevenue += Number(row.spill_total_revenue_est || 0);
@@ -1099,13 +1044,22 @@ export default function AppSimple() {
     const rows = [...grouped.values()].map((row) => {
       const level1 = level1ByOd.get(row.od);
       const level2 = level2ByOd.get(row.od);
+      const comp = competitorByOd.get(row.od) || {
+        compLocalPax: 0,
+        compFlowPax: 0,
+        compTotalPax: 0,
+        compLocalDemand: 0,
+        compFlowDemand: 0,
+        compTotalDemand: 0,
+      };
       const marketElapsed = level2?.marketTraffic ? level2.marketElapsedWeighted / level2.marketTraffic : 0;
       const hostElapsed = level2?.hostTraffic ? level2.hostElapsedWeighted / level2.hostTraffic : 0;
       const elapsedTimeDeltaPct = marketElapsed > 0 ? ((hostElapsed - marketElapsed) / marketElapsed) * 100 : 0;
-      const demandDenominator = (row.localPax + row.flowPax) || row.totalPax || 1;
+      const demandDenominator = (row.localDemand + row.flowDemand) || row.totalDemand || 1;
       const revDenominator = row.totalRevenue || row.localRevenue + row.flowRevenue || 1;
       return {
         ...row,
+        ...comp,
         weeklyPax: Number(row.totalPax || 0),
         weeklySeats: Number(row.weeklySeats || level1?.weekly_seats_est || 0),
         loadFactorPct:
@@ -1120,15 +1074,15 @@ export default function AppSimple() {
         predictedMarketSharePct: Number(level2?.hostTrafficSharePct || level1?.host_share_of_market_demand_pct_est || 0),
         actualMarketSharePct: Number(level2?.hostDemandSharePct || level2?.hostTrafficSharePct || 0),
         elapsedTimeDeltaPct,
-        localDemandPct: (row.localPax / demandDenominator) * 100,
-        flowDemandPct: (row.flowPax / demandDenominator) * 100,
+        localDemandPct: (row.localDemand / demandDenominator) * 100,
+        flowDemandPct: (row.flowDemand / demandDenominator) * 100,
         localRevenuePct: (row.localRevenue / revDenominator) * 100,
         flowRevenuePct: (row.flowRevenue / revDenominator) * 100,
       };
     });
     rows.sort((left, right) => right.totalRevenue - left.totalRevenue);
     return rows;
-  }, [bundle, hostWorksetFlightRows, hostAirline]);
+  }, [bundle, hostWorksetFlightRows, hostAirline, allWorksetFlightRows]);
 
   const hostPax = odNetworkRows.reduce((sum, row) => sum + Number(row.weeklyPax || row.totalPax || 0), 0);
   const hostSeats = odNetworkRows.reduce((sum, row) => sum + Number(row.weeklySeats || 0), 0);
@@ -1171,12 +1125,12 @@ export default function AppSimple() {
       "weeklyDepartures",
       "localPax",
       "flowPax",
-      "flowPddPct",
-      "flowApmPct",
+      "compLocalPax",
+      "compFlowPax",
+      "localDemand",
+      "flowDemand",
       "absPaxDiffPct",
       "absPlfDiffPct",
-      "localRevenue",
-      "flowRevenue",
     ];
     const scales = {};
     for (const key of keys) {
@@ -1294,63 +1248,6 @@ export default function AppSimple() {
     ? (odNetworkRows.find((r) => r.od === networkClickedOd) || null)
     : null;
 
-  const strategicRouteScores = useMemo(
-    () => buildStrategicRouteMetrics(odNetworkRowsFiltered, bundle?.level2_od_airline_share_summary || [], hostAirline),
-    [odNetworkRowsFiltered, bundle, hostAirline],
-  );
-
-  const strategicSummary = useMemo(() => {
-    if (!strategicRouteScores.length) return null;
-    const avg = (key) => strategicRouteScores.reduce((s, r) => s + Number(r[key] || 0), 0) / strategicRouteScores.length;
-    return {
-      networkHubOptimization: avg("networkHubOptimization"),
-      hubConnectivitySpoke: avg("hubConnectivitySpoke"),
-      routeProfitabilityMarketShare: avg("routeProfitabilityMarketShare"),
-      seasonalFlexibility: avg("seasonalFlexibility"),
-      marketEntryFeasibility: avg("marketEntryFeasibility"),
-      competitorOverlapPenetration: avg("competitorOverlapPenetration"),
-      combinedStrategicScore: avg("combinedStrategicScore"),
-    };
-  }, [strategicRouteScores]);
-
-  const topStrategicRoutes = useMemo(() => strategicRouteScores.slice(0, 12), [strategicRouteScores]);
-
-  const selectedOdMarketRows = useMemo(
-    () => (bundle?.level2_od_airline_share_summary || []).filter((r) => `${normalizeCode(r.orig)}-${normalizeCode(r.dest)}` === selectedOd),
-    [bundle, selectedOd],
-  );
-
-  const yieldByAirlineRows = useMemo(() => {
-    const grouped = new Map();
-    for (const r of selectedOdMarketRows) {
-      const carrier = normalizeCode(r.carrier);
-      if (!carrier) continue;
-      const g = grouped.get(carrier) || { carrier, traffic: 0, revenue: 0 };
-      g.traffic += Number(r.total_traffic_est || 0);
-      g.revenue += Number(r.total_revenue_est || 0);
-      grouped.set(carrier, g);
-    }
-    const out = [...grouped.values()].map((r) => ({
-      ...r,
-      yield: safeRatio(r.revenue, r.traffic),
-    })).sort((a, b) => b.yield - a.yield);
-    const marketYield = safeRatio(out.reduce((s, r) => s + r.revenue, 0), out.reduce((s, r) => s + r.traffic, 0));
-    return out.map((r) => ({ ...r, premiumVsMarketPct: marketYield > 0 ? ((r.yield - marketYield) / marketYield) * 100 : 0 }));
-  }, [selectedOdMarketRows]);
-
-  const itineraryDemandMix = useMemo(() => {
-    const totalDemand = itineraryRows.reduce((s, r) => s + Number(r["Total Demand"] || 0), 0);
-    const directDemand = itineraryRows
-      .filter((r) => Number(r["Stops"] || 0) === 0)
-      .reduce((s, r) => s + Number(r["Total Demand"] || 0), 0);
-    const connectingDemand = Math.max(0, totalDemand - directDemand);
-    return {
-      totalDemand,
-      directDemandPct: totalDemand > 0 ? (directDemand / totalDemand) * 100 : 0,
-      connectingDemandPct: totalDemand > 0 ? (connectingDemand / totalDemand) * 100 : 0,
-    };
-  }, [itineraryRows]);
-
   // Load competitor flights for Flight View when origin+dest both selected
   useEffect(() => {
     if (!fvOrig || !fvDest) { setFvCompFlightRows([]); return; }
@@ -1416,22 +1313,33 @@ export default function AppSimple() {
           })
           .map((r) => {
             const parsed = parseFlightDesign(r["Flt Desg"]);
+            const orig = normalizeCode(r["Dept Sta"]);
+            const dest = normalizeCode(r["Arvl Sta"]);
             const weeklyDeps = countFreqDays(r["Freq"]);
             const weeklySeats = Number(r["Seats"] || 0);
             const seatsPerDep = weeklyDeps > 0 ? (weeklySeats / weeklyDeps) : weeklySeats;
             const observedPax = Number(r["Total Traffic"] || 0);
             const localPax = Number(r["Lcl Traffic"] || 0);
             const flowPax = Math.max(0, observedPax - localPax);
+            const totalDemand = Number(r["Total Demand"] || observedPax || 0);
+            const localDemandDirect = Number(r["Lcl Demand"] || 0);
+            const localDemandMktd = Number(r["Lcl Demand (Mktd)"] || 0);
+            const localDemandCodeshared = Number(r["Lcl Demand (Codeshared)"] || 0);
+            const localDemandCombined = localDemandMktd + localDemandCodeshared;
+            const localDemand = localDemandDirect > 0
+              ? localDemandDirect
+              : (localDemandCombined > 0 ? localDemandCombined : Math.min(totalDemand, localPax));
+            const flowDemand = Math.max(0, totalDemand - localDemand);
             const revenue = Number(r["Total Revenue($)"] || r["Pax Revenue($)"] || 0);
             const loadFactorRaw = Number(r["Load Factor (%)"] || 0);
             const loadFactor = loadFactorRaw > 0 ? loadFactorRaw : (weeklySeats > 0 ? (observedPax / weeklySeats) * 100 : 0);
             return {
               isHost: true,
-              key: `${hostAirline}-${parsed.flightNumber}-${r["Dept Sta"]}-${r["Arvl Sta"]}`,
+              key: `${normalizeCode(hostAirline)}-${parsed.flightNumber}-${orig}-${dest}`,
               airline: hostAirline,
               flightNumber: parsed.flightNumber,
-              orig: normalizeCode(r["Dept Sta"]),
-              dest: normalizeCode(r["Arvl Sta"]),
+              orig,
+              dest,
               freq: r["Freq"],
               weeklyDeps,
               equipment: r["Subfleet"],
@@ -1440,6 +1348,9 @@ export default function AppSimple() {
               arvlTime: r["Arvl Time"],
               elapTime: r["Elap Time"],
               observedPax,
+              totalDemand,
+              localDemand,
+              flowDemand,
               totalPax: observedPax,
               localPax,
               flowPax,
@@ -1464,6 +1375,9 @@ export default function AppSimple() {
         const weeklySeats = Number(r.weekly_seats_est || 0);
         const seatsPerDep = weeklyDeps > 0 ? (weeklySeats / weeklyDeps) : Number(r.avg_seats_per_departure || 0);
         const observedPax = Number(r.weekly_pax_est || r.spill_total_pax_est || 0);
+        const totalDemand = Number(r.weekly_demand_est || r.spill_total_pax_est || r.weekly_pax_est || 0);
+        const localDemand = Number(r.spill_local_pax_est || 0);
+        const flowDemand = Math.max(0, Number(r.spill_flow_pax_est || 0));
         const lfFromObserved = weeklySeats > 0 ? (observedPax / weeklySeats) * 100 : 0;
         return {
           isHost: true,
@@ -1477,6 +1391,9 @@ export default function AppSimple() {
           seatsPerDep,
           deptTime: null, arvlTime: null, elapTime: null,
           observedPax,
+          totalDemand,
+          localDemand,
+          flowDemand,
           totalPax: r.weekly_pax_est || r.spill_total_pax_est,
           localPax: r.spill_local_pax_est,
           flowPax: r.spill_flow_pax_est,
@@ -1490,7 +1407,9 @@ export default function AppSimple() {
 
   // Flight View: competitor flights (from fetched data for selected OD)
   const fvCompFlights = useMemo(() => {
-    const sourceRows = fvCompFlightRows;
+    // Guardrail: only materialize competitor universe for a selected OD pair to keep UI responsive.
+    if (!fvOrig || !fvDest) return [];
+    const sourceRows = allWorksetFlightRows.length ? allWorksetFlightRows : fvCompFlightRows;
     return dedupeBy(sourceRows
       .filter((r) => {
         const parsed = parseFlightDesign(r["Flt Desg"]);
@@ -1501,23 +1420,38 @@ export default function AppSimple() {
       })
       .map((r) => {
         const parsed = parseFlightDesign(r["Flt Desg"]);
+        const orig = normalizeCode(r["Dept Sta"]);
+        const dest = normalizeCode(r["Arvl Sta"]);
         const weeklyDeps = countFreqDays(r["Freq"]);
         const weeklySeats = Number(r["Seats"] || 0);
         const seatsPerDep = weeklyDeps > 0 ? (weeklySeats / weeklyDeps) : weeklySeats;
         const observedPax = Number(r["Total Traffic"] || 0);
+        const totalDemand = Number(r["Total Demand"] || observedPax || 0);
+        const localDemandDirect = Number(r["Lcl Demand"] || 0);
+        const localDemandMktd = Number(r["Lcl Demand (Mktd)"] || 0);
+        const localDemandCodeshared = Number(r["Lcl Demand (Codeshared)"] || 0);
+        const localDemandCombined = localDemandMktd + localDemandCodeshared;
+        const localDemand = localDemandDirect > 0
+          ? localDemandDirect
+          : (localDemandCombined > 0 ? localDemandCombined : Math.min(totalDemand, observedPax));
+        const flowDemand = Math.max(0, totalDemand - localDemand);
         const loadFactor = weeklySeats > 0 ? (observedPax / weeklySeats) * 100 : 0;
         return {
           isHost: false,
-          key: `comp-${parsed.airline}-${parsed.flightNumber}-${r["Dept Sta"]}-${r["Arvl Sta"]}`,
+          key: `comp-${normalizeCode(parsed.airline)}-${parsed.flightNumber}-${orig}-${dest}`,
           airline: parsed.airline,
           flightNumber: parsed.flightNumber,
-          orig: normalizeCode(r["Dept Sta"]), dest: normalizeCode(r["Arvl Sta"]),
+          orig,
+          dest,
           freq: r["Freq"],
           weeklyDeps,
           equipment: r["Subfleet"],
           seatsPerDep,
           deptTime: r["Dept Time"], arvlTime: r["Arvl Time"], elapTime: r["Elap Time"],
           observedPax,
+          totalDemand,
+          localDemand,
+          flowDemand,
           totalPax: null, localPax: null, flowPax: null,
           loadFactor,
           weeklySeats,
@@ -1525,7 +1459,7 @@ export default function AppSimple() {
           avgFare: observedPax > 0 ? Number(r["Total Revenue($)"] || r["Pax Revenue($)"] || 0) / observedPax : null,
         };
       }), (r) => r.key);
-  }, [fvCompFlightRows, hostAirline, fvOrig, fvDest]);
+  }, [allWorksetFlightRows, fvCompFlightRows, hostAirline, fvOrig, fvDest]);
 
   // Flight View: combined and filtered
   const fvFilteredFlights = useMemo(() => {
@@ -1540,21 +1474,34 @@ export default function AppSimple() {
     });
   }, [fvHostFlights, fvCompFlights, fvAirlineFilter, fvOrig, fvDest]);
 
+  const MAX_FLIGHT_ROWS = 500;
+  const fvDisplayedFlights = useMemo(
+    () => fvFilteredFlights.slice(0, MAX_FLIGHT_ROWS),
+    [fvFilteredFlights],
+  );
+  const fvRowsTruncated = fvFilteredFlights.length > MAX_FLIGHT_ROWS;
+
   const fvHostRows = useMemo(() => fvFilteredFlights.filter((f) => f.isHost), [fvFilteredFlights]);
   const fvCompRows = useMemo(() => fvFilteredFlights.filter((f) => !f.isHost), [fvFilteredFlights]);
+  const fvHostLfAvg = useMemo(() => {
+    const seats = fvHostRows.reduce((sum, f) => sum + Number(f.weeklySeats || (Number(f.seatsPerDep || 0) * Number(f.weeklyDeps || 0))), 0);
+    const pax = fvHostRows.reduce((sum, f) => sum + Number(f.observedPax || 0), 0);
+    return seats > 0 ? (pax / seats) * 100 : 0;
+  }, [fvHostRows]);
 
   const fvKpiCards = useMemo(() => {
     const hostFlights = fvHostRows.length;
     const compFlights = fvCompRows.length;
     const hostObservedPax = fvHostRows.reduce((sum, f) => sum + Number(f.observedPax || 0), 0);
     const compObservedPax = fvCompRows.reduce((sum, f) => sum + Number(f.observedPax || 0), 0);
+    const hostTotalDemand = fvHostRows.reduce((sum, f) => sum + Number(f.totalDemand || 0), 0);
+    const compTotalDemand = fvCompRows.reduce((sum, f) => sum + Number(f.totalDemand || 0), 0);
+    const hostLocalDemand = fvHostRows.reduce((sum, f) => sum + Number(f.localDemand || 0), 0);
+    const compLocalDemand = fvCompRows.reduce((sum, f) => sum + Number(f.localDemand || 0), 0);
+    const hostFlowDemand = fvHostRows.reduce((sum, f) => sum + Number(f.flowDemand || 0), 0);
+    const compFlowDemand = fvCompRows.reduce((sum, f) => sum + Number(f.flowDemand || 0), 0);
     const hostRevenue = fvHostRows.reduce((sum, f) => sum + Number(f.revenue || 0), 0);
     const compRevenue = fvCompRows.reduce((sum, f) => sum + Number(f.revenue || 0), 0);
-    const hostLfAvg = (() => {
-      const seats = fvHostRows.reduce((sum, f) => sum + Number(f.weeklySeats || (Number(f.seatsPerDep || 0) * Number(f.weeklyDeps || 0))), 0);
-      const pax = fvHostRows.reduce((sum, f) => sum + Number(f.observedPax || 0), 0);
-      return seats > 0 ? (pax / seats) * 100 : 0;
-    })();
     const compLfAvg = (() => {
       const seats = fvCompRows.reduce((sum, f) => sum + Number(f.weeklySeats || (Number(f.seatsPerDep || 0) * Number(f.weeklyDeps || 0))), 0);
       const pax = fvCompRows.reduce((sum, f) => sum + Number(f.observedPax || 0), 0);
@@ -1566,14 +1513,29 @@ export default function AppSimple() {
     return [
       { id: "flights", label: "Flights", host: hostFlights, comp: compFlights, format: (v) => formatNumber(v, 0), accent: false },
       { id: "pax", label: "Observed Pax", host: hostObservedPax, comp: compObservedPax, format: (v) => formatNumber(v, 1), accent: false },
-      { id: "lf", label: "Avg LF %", host: hostLfAvg, comp: compLfAvg, format: (v) => formatPct(v, 1), accent: false },
+      { id: "total-demand", label: "Total Demand", host: hostTotalDemand, comp: compTotalDemand, format: (v) => formatNumber(v, 1), accent: false },
+      { id: "local-demand", label: "Local Demand", host: hostLocalDemand, comp: compLocalDemand, format: (v) => formatNumber(v, 1), accent: false },
+      { id: "flow-demand", label: "Flow Demand", host: hostFlowDemand, comp: compFlowDemand, format: (v) => formatNumber(v, 1), accent: false },
+      { id: "lf", label: "Avg LF %", host: fvHostLfAvg, comp: compLfAvg, format: (v) => formatPct(v, 1), accent: false },
       { id: "revenue", label: "Revenue", host: hostRevenue, comp: compRevenue, format: (v) => formatNumber(v, 0), accent: true },
       { id: "fare", label: "Avg Fare", host: hostFareAvg, comp: compFareAvg, format: (v) => formatNumber(v, 0), accent: false },
     ];
-  }, [fvHostRows, fvCompRows]);
+  }, [fvHostRows, fvCompRows, fvHostLfAvg]);
 
   const fvNumericScales = useMemo(() => {
-    const keys = ["seatsPerDep", "observedPax", "loadFactor", "totalPax", "localPax", "flowPax", "revenue", "avgFare"];
+    const keys = [
+      "seatsPerDep",
+      "observedPax",
+      "totalDemand",
+      "localDemand",
+      "flowDemand",
+      "loadFactor",
+      "totalPax",
+      "localPax",
+      "flowPax",
+      "revenue",
+      "avgFare",
+    ];
     const scales = {};
     for (const key of keys) {
       const values = fvFilteredFlights
@@ -1622,6 +1584,47 @@ export default function AppSimple() {
       .map((r) => ({ ...r, label: `${r.flow_orig}-${r.flow_dest}` }))
       .sort((a, b) => Number(b.flow_pax_est || 0) - Number(a.flow_pax_est || 0));
   }, [fvSelectedFlight, bundle]);
+
+  const fvOdDemandBreakupRows = useMemo(() => {
+    const grouped = new Map();
+    for (const row of fvFilteredFlights) {
+      const od = `${normalizeCode(row.orig)}-${normalizeCode(row.dest)}`;
+      const current = grouped.get(od) || {
+        od,
+        orig: normalizeCode(row.orig),
+        dest: normalizeCode(row.dest),
+        hostTotalDemand: 0,
+        hostLocalDemand: 0,
+        hostFlowDemand: 0,
+        compTotalDemand: 0,
+        compLocalDemand: 0,
+        compFlowDemand: 0,
+      };
+      if (row.isHost) {
+        current.hostTotalDemand += Number(row.totalDemand || 0);
+        current.hostLocalDemand += Number(row.localDemand || 0);
+        current.hostFlowDemand += Number(row.flowDemand || 0);
+      } else {
+        current.compTotalDemand += Number(row.totalDemand || 0);
+        current.compLocalDemand += Number(row.localDemand || 0);
+        current.compFlowDemand += Number(row.flowDemand || 0);
+      }
+      grouped.set(od, current);
+    }
+    return [...grouped.values()]
+      .map((row) => ({
+        ...row,
+        marketTotalDemand: row.hostTotalDemand + row.compTotalDemand,
+        marketLocalDemand: row.hostLocalDemand + row.compLocalDemand,
+        marketFlowDemand: row.hostFlowDemand + row.compFlowDemand,
+      }))
+      .sort((a, b) => Number(b.marketTotalDemand || 0) - Number(a.marketTotalDemand || 0));
+  }, [fvFilteredFlights]);
+  const fvSelectedOdBreakupRows = useMemo(() => {
+    if (!fvSelectedFlight) return [];
+    const od = `${normalizeCode(fvSelectedFlight.orig)}-${normalizeCode(fvSelectedFlight.dest)}`;
+    return fvOdDemandBreakupRows.filter((r) => r.od === od);
+  }, [fvSelectedFlight, fvOdDemandBreakupRows]);
 
   // O&D View: market summary rows
   const odViewMarketRows = useMemo(() => {
@@ -1812,7 +1815,7 @@ export default function AppSimple() {
         <span />
       </button>
       <aside className="sidebar">
-          <div className="sidebar-brand"><div><div className="eyebrow">NETWORK PLANNER</div><strong>{hostAirline || "-"}</strong></div></div>
+          <div className="sidebar-brand"><div><div className="eyebrow">NETWORK FORECASTER</div><strong>{hostAirline || "-"}</strong></div></div>
         <div className="sidebar-selectors">
           {worksets.length > 1 ? (
             <div className="selector-wrap">
@@ -1831,16 +1834,16 @@ export default function AppSimple() {
           </div>
         </div>
         <div className="sidebar-divider" />
-        <SidebarKpis
-          hostAirline={hostAirline}
-          hostPax={hostPax}
-          hostSeats={hostSeats}
-          avgLoadFactor={avgLoadFactor}
-          totalLocalPax={totalLocalPax}
-          totalFlowPax={totalFlowPax}
-          totalLocalRevenue={totalLocalRevenue}
-          totalFlowRevenue={totalFlowRevenue}
-        />
+              <SidebarKpis
+                hostAirline={hostAirline}
+                hostPax={hostPax}
+                hostSeats={hostSeats}
+                avgLoadFactor={activeTab === "flightView" ? fvHostLfAvg : avgLoadFactor}
+                totalLocalPax={totalLocalPax}
+                totalFlowPax={totalFlowPax}
+                totalLocalRevenue={totalLocalRevenue}
+                totalFlowRevenue={totalFlowRevenue}
+              />
       </aside>
       {isMobile && mobileSidebarOpen ? <div className="sidebar-overlay" onClick={() => setMobileSidebarOpen(false)} /> : null}
       <main className="main-shell">
@@ -1889,15 +1892,16 @@ export default function AppSimple() {
                 { key: "orig", label: "Origin", render: (value) => <strong>{normalizeCode(value)}</strong> },
                 { key: "dest", label: "Destination", render: (value) => <strong>{normalizeCode(value)}</strong> },
                 { key: "weeklyDepartures", label: "Wkly Deps", render: (value) => renderNetworkNumericCell(value, "weeklyDepartures", 0) },
-                { key: "localPax", label: "Local Pax", render: (value) => renderNetworkNumericCell(value, "localPax", 1) },
-                { key: "flowPax", label: "Flow Pax", render: (value) => renderNetworkNumericCell(value, "flowPax", 1) },
+                { key: "localPax", label: `${hostAirline} Local Pax`, render: (value) => renderNetworkNumericCell(value, "localPax", 1) },
+                { key: "flowPax", label: `${hostAirline} Flow Pax`, render: (value) => renderNetworkNumericCell(value, "flowPax", 1) },
+                { key: "compLocalPax", label: "Comp Local Pax", render: (value) => renderNetworkNumericCell(value, "compLocalPax", 1) },
+                { key: "compFlowPax", label: "Comp Flow Pax", render: (value) => renderNetworkNumericCell(value, "compFlowPax", 1) },
+                { key: "localDemand", label: "Local Demand", render: (value) => renderNetworkNumericCell(value, "localDemand", 1) },
+                { key: "flowDemand", label: "Flow Demand", render: (value) => renderNetworkNumericCell(value, "flowDemand", 1) },
                 { key: "mix", label: "Demand/Revenue Mix", render: (_, row) => <MixFusion demandLocalPct={row.localDemandPct} demandFlowPct={row.flowDemandPct} revenueLocalPct={row.localRevenuePct} revenueFlowPct={row.flowRevenuePct} /> },
-                { key: "flowPddPct", label: "Flow PDD %", render: (value) => renderNetworkNumericCell(value, "flowPddPct", 1, true) },
-                { key: "flowApmPct", label: "Flow APM %", render: (value) => renderNetworkNumericCell(value, "flowApmPct", 1, true) },
                 { key: "absPaxDiffPct", label: "Abs Pax Diff %", render: (value) => renderNetworkNumericCell(value, "absPaxDiffPct", 1, true) },
                 { key: "absPlfDiffPct", label: "Abs LF Diff pts", render: (value) => renderNetworkNumericCell(value, "absPlfDiffPct", 1) },
-                { key: "localRevenue", label: "Local Revenue", render: (value) => renderNetworkNumericCell(value, "localRevenue", 0) },
-                { key: "flowRevenue", label: "Flow Revenue", render: (value) => renderNetworkNumericCell(value, "flowRevenue", 0) },
+                { key: "revenueMix", label: "Local/Flow Revenue", render: (_, row) => <RevenueMixPieCell localRevenue={row.localRevenue} flowRevenue={row.flowRevenue} /> },
               ]}
               rows={odNetworkRowsFiltered}
               emptyMessage="No host OD aggregates available."
@@ -1976,22 +1980,27 @@ export default function AppSimple() {
 
     {/* Flight Table */}
     <div className="fv-table-wrap">
+      {fvRowsTruncated ? (
+        <div className="fv-comp-hint" style={{ marginBottom: "8px" }}>
+          Showing first {formatNumber(MAX_FLIGHT_ROWS, 0)} rows for performance. Refine Origin/Destination filters for full detail.
+        </div>
+      ) : null}
       <div className="table-shell">
-        <table>
+        <table className="fv-wide-table">
           <thead>
             <tr>
               <th>Airline</th><th>Flight #</th><th>Orig</th><th>Dest</th>
               <th>Freq</th><th>Wkly Deps</th><th>A/C</th><th>Seats/Dep</th>
               <th>Dept</th><th>Arvl</th><th>Elap</th>
-              <th>Obs Pax</th><th>LF %</th>
+              <th>Obs Pax</th><th>Total Demand</th><th>Local Demand</th><th>Flow Demand</th><th>LF %</th>
               <th>Spill Total</th><th>Local Pax</th><th>Flow Pax</th>
               <th>Revenue</th><th>Avg Fare</th>
             </tr>
           </thead>
           <tbody>
-            {fvFilteredFlights.length === 0 ? (
-              <tr><td colSpan={18} style={{ textAlign: "center", padding: "24px", color: "var(--text-secondary)", fontStyle: "italic" }}>No flights match the selected filters.</td></tr>
-            ) : fvFilteredFlights.map((f) => (
+            {fvDisplayedFlights.length === 0 ? (
+              <tr><td colSpan={21} style={{ textAlign: "center", padding: "24px", color: "var(--text-secondary)", fontStyle: "italic" }}>No flights match the selected filters.</td></tr>
+            ) : fvDisplayedFlights.map((f) => (
               <tr
                 key={f.key}
                 className={`row-clickable ${f.isHost ? "fv-host-row" : "fv-comp-row"} ${selectedFlightKey === f.key ? "row-selected" : ""}`}
@@ -2024,6 +2033,9 @@ export default function AppSimple() {
                 <td>{f.arvlTime || "-"}</td>
                 <td>{f.elapTime || "-"}</td>
                 <td>{renderFvNumericCell(f.observedPax, "observedPax", 1)}</td>
+                <td>{renderFvNumericCell(f.totalDemand, "totalDemand", 1)}</td>
+                <td>{renderFvNumericCell(f.localDemand, "localDemand", 1)}</td>
+                <td>{renderFvNumericCell(f.flowDemand, "flowDemand", 1)}</td>
                 <td>{renderFvNumericCell(f.loadFactor, "loadFactor", 1, true)}</td>
                 <td>{f.isHost ? renderFvNumericCell(f.totalPax, "totalPax", 1) : "-"}</td>
                 <td>{f.isHost ? renderFvNumericCell(f.localPax, "localPax", 1) : "-"}</td>
@@ -2184,152 +2196,54 @@ export default function AppSimple() {
           </span>
         ))}
       </div>
-    </div>
-  </div>
-) : null}
-          {activeTab === "analysis" ? (
-  <div className="tab-content">
-    <div className="analysis-head">
-      <h3>Strategic Route Metrics</h3>
-      <p>Umbrex-style framework across network optimization, connectivity, profitability, seasonality, entry feasibility, and competitor overlap.</p>
-    </div>
-
-    <div className="analysis-kpi-grid">
-      {[
-        { label: "Network & Hub Optimization", key: "networkHubOptimization" },
-        { label: "Hub Connectivity & Spoke", key: "hubConnectivitySpoke" },
-        { label: "Route Profitability & Share", key: "routeProfitabilityMarketShare" },
-        { label: "Seasonal Flexibility", key: "seasonalFlexibility" },
-        { label: "Market Entry Feasibility", key: "marketEntryFeasibility" },
-        { label: "Competitor Overlap & Penetration", key: "competitorOverlapPenetration" },
-        { label: "Combined Strategic Score", key: "combinedStrategicScore", accent: true },
-      ].map((m) => (
-        <div key={m.key} className={`analysis-kpi-card ${m.accent ? "accent" : ""}`}>
-          <div className="analysis-kpi-label">{m.label}</div>
-          <div className="analysis-kpi-value">{strategicSummary ? formatNumber(strategicSummary[m.key], 1) : "-"}</div>
-          <div className="analysis-kpi-track">
-            <div className="analysis-kpi-fill" style={{ width: `${strategicSummary ? clamp(strategicSummary[m.key], 0, 100) : 0}%` }} />
-          </div>
+      <div className="od-table-section" style={{ margin: "0 12px 12px" }}>
+        <div className="od-table-section-head">
+          <h4>Market Summary Table</h4>
+          <p>Detailed carrier-wise market metrics for {selectedOd}</p>
         </div>
-      ))}
-    </div>
-
-    <div className="analysis-grid">
-      <div className="analysis-card">
-        <div className="analysis-card-head">
-          <h4>Top Routes by Combined Score</h4>
-          <p>Higher score = stronger strategic fit and competitive position</p>
-        </div>
-        <div className="analysis-bars">
-          {topStrategicRoutes.length === 0 ? (
-            <div className="empty-state">No routes available for scoring.</div>
-          ) : topStrategicRoutes.map((r) => (
-            <div key={r.od} className="analysis-bar-row">
-              <div className="analysis-bar-label">{r.od}</div>
-              <div className="analysis-bar-track">
-                <div className="analysis-bar-fill" style={{ width: `${clamp(r.combinedStrategicScore, 0, 100)}%` }} />
-              </div>
-              <div className="analysis-bar-value">{formatNumber(r.combinedStrategicScore, 1)}</div>
-            </div>
-          ))}
-        </div>
-      </div>
-
-      <div className="analysis-card">
-        <div className="analysis-card-head">
-          <h4>Opportunity Bubble (Competition vs Yield)</h4>
-          <p>X = top competitor share, Y = host yield, size = market size</p>
-        </div>
-        <svg viewBox="0 0 420 240" className="analysis-bubble-svg">
-          <rect x="36" y="16" width="360" height="188" fill="#f8fafc" stroke="#e2e8f0" />
-          {(() => {
-            const yieldVals = topStrategicRoutes.map((xv) => xv.yield);
-            const minY = minFinite(yieldVals, 0);
-            const maxY = Math.max(1, maxFinite(yieldVals, 1));
-            const marketVals = topStrategicRoutes.map((xv) => xv.marketSize);
-            const mMin = minFinite(marketVals, 0);
-            const mMax = Math.max(1, maxFinite(marketVals, 1));
-            return topStrategicRoutes.map((r, idx) => {
-              const x = 36 + clamp(r.topCompShare, 0, 100) * 3.6;
-              const yNorm = minMaxScale(r.yield, minY, maxY);
-              const y = 204 - yNorm * 1.88;
-              const radius = 4 + (minMaxScale(r.marketSize, mMin, mMax) / 100) * 10;
-              return (
-                <g key={`${r.od}-${idx}`}>
-                  <circle cx={x} cy={y} r={radius} fill="rgba(14,165,233,0.35)" stroke="#0284c7" />
-                  {idx < 8 ? <text x={x + 6} y={y - 4} className="analysis-bubble-label">{r.od}</text> : null}
-                </g>
-              );
-            });
-          })()}
-        </svg>
-      </div>
-    </div>
-
-    <div className="analysis-head" style={{ marginTop: "18px" }}>
-      <h3>Passenger Yield &amp; Demographic Analysis</h3>
-      <p>Selected OD: <strong>{selectedOd || "-"}</strong> | Yield by airline + demand profile proxies (direct/connecting).</p>
-    </div>
-    <div className="analysis-grid">
-      <div className="analysis-card">
-        <div className="analysis-card-head">
-          <h4>Yield by Airline</h4>
-          <p>Revenue per boarded passenger (selected OD)</p>
-        </div>
-        <div className="analysis-bars">
-          {(() => {
-            const maxY = Math.max(1, maxFinite(yieldByAirlineRows.map((x) => x.yield), 0));
-            return yieldByAirlineRows.length === 0 ? (
-            <div className="empty-state">No market-share rows available for selected OD.</div>
-          ) : yieldByAirlineRows.map((r) => {
-            const width = (r.yield / maxY) * 100;
-            return (
-              <div key={r.carrier} className="analysis-bar-row">
-                <div className="analysis-bar-label">{r.carrier}</div>
-                <div className="analysis-bar-track">
-                  <div className="analysis-bar-fill secondary" style={{ width: `${width}%` }} />
-                </div>
-                <div className="analysis-bar-value">{formatNumber(r.yield, 0)}</div>
-              </div>
-            );
-          });
-          })()}
-        </div>
-      </div>
-      <div className="analysis-card">
-        <div className="analysis-card-head">
-          <h4>Demand Demographic Proxy</h4>
-          <p>Direct vs connecting demand split (selected OD)</p>
-        </div>
-        <div className="analysis-demographic">
-          <div className="analysis-demographic-row">
-            <span>Direct Demand</span>
-            <strong>{formatPct(itineraryDemandMix.directDemandPct, 1)}</strong>
-          </div>
-          <div className="analysis-demographic-track">
-            <div className="analysis-demographic-fill direct" style={{ width: `${clamp(itineraryDemandMix.directDemandPct, 0, 100)}%` }} />
-          </div>
-          <div className="analysis-demographic-row">
-            <span>Connecting Demand</span>
-            <strong>{formatPct(itineraryDemandMix.connectingDemandPct, 1)}</strong>
-          </div>
-          <div className="analysis-demographic-track">
-            <div className="analysis-demographic-fill connecting" style={{ width: `${clamp(itineraryDemandMix.connectingDemandPct, 0, 100)}%` }} />
-          </div>
-          <div className="analysis-demographic-foot">
-            Total Demand: <strong>{formatNumber(itineraryDemandMix.totalDemand, 1)}</strong>
-          </div>
+        <div className="odv-table-shell">
+          <table className="od-data-table">
+            <thead>
+              <tr>
+                <th>Market</th>
+                <th>Airline</th>
+                <th>Num NStps</th>
+                <th>Num Cncts</th>
+                <th>Total Demand</th>
+                <th>Demand Share %</th>
+                <th>Total Traffic</th>
+                <th>Traffic Share %</th>
+                <th>Pax Revenue($)</th>
+                <th>Revenue Share %</th>
+                <th>Avg Fare</th>
+              </tr>
+            </thead>
+            <tbody>
+              {odViewMarketRows.length === 0 ? (
+                <tr><td colSpan={11} style={{ textAlign: "center", color: "var(--text-secondary)" }}>No market rows available.</td></tr>
+              ) : odViewMarketRows.map((row) => (
+                <tr key={`od-summary-${selectedOd}-${row.aln}`} className={row.aln === hostAirline ? "odv-host-row" : ""}>
+                  <td>{selectedOd}</td>
+                  <td>
+                    <strong>{row.aln}</strong>
+                    {row.aln === hostAirline ? <span className="odv-host-badge">HOST</span> : null}
+                  </td>
+                  <td>{formatNumber(row.nstops, 0)}</td>
+                  <td>{formatNumber(row.cncts, 0)}</td>
+                  <td>{formatNumber(row.demand, 1)}</td>
+                  <td>{formatPct(row.demandShare, 1)}</td>
+                  <td>{formatNumber(row.traffic, 1)}</td>
+                  <td>{formatPct(row.trafficShare, 1)}</td>
+                  <td>{formatNumber(row.revenue, 0)}</td>
+                  <td>{formatPct(row.revenueShare, 1)}</td>
+                  <td>{formatNumber(row.avgFare, 0)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       </div>
     </div>
-  </div>
-) : null}
-          {activeTab === "mirofish" ? (
-  <div className="tab-content">
-    <MiroFishSimulatorTab
-      worksetId={worksetId}
-      hostAirline={hostAirline}
-    />
   </div>
 ) : null}
         </section>
@@ -2406,15 +2320,49 @@ export default function AppSimple() {
                   </>
                 )}
               </div>
+              {fvSelectedOdBreakupRows.length > 0 ? (
+                <div className="fv-table-wrap" style={{ marginBottom: "12px" }}>
+                  <div className="table-shell">
+                    <table className="fv-od-breakup-table">
+                      <thead>
+                        <tr>
+                          <th>OD</th>
+                          <th>{hostAirline} Total Demand</th>
+                          <th>{hostAirline} Local Demand</th>
+                          <th>{hostAirline} Flow Demand</th>
+                          <th>Comp Total Demand</th>
+                          <th>Comp Local Demand</th>
+                          <th>Comp Flow Demand</th>
+                          <th>Market Total Demand</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {fvSelectedOdBreakupRows.map((row) => (
+                          <tr key={`fv-od-demand-modal-${row.od}`}>
+                            <td><strong>{row.od}</strong></td>
+                            <td>{renderFvNumericCell(row.hostTotalDemand, "totalDemand", 1)}</td>
+                            <td>{renderFvNumericCell(row.hostLocalDemand, "localDemand", 1)}</td>
+                            <td>{renderFvNumericCell(row.hostFlowDemand, "flowDemand", 1)}</td>
+                            <td>{renderFvNumericCell(row.compTotalDemand, "totalDemand", 1)}</td>
+                            <td>{renderFvNumericCell(row.compLocalDemand, "localDemand", 1)}</td>
+                            <td>{renderFvNumericCell(row.compFlowDemand, "flowDemand", 1)}</td>
+                            <td>{renderFvNumericCell(row.marketTotalDemand, "totalDemand", 1)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              ) : null}
               {fvSelectedFlight.isHost ? (
                 fvFlowRows.length > 0 ? (
                   <Table
                     columns={[
-                      { key: "label", label: "Flow OD", render: (v) => <strong>{v}</strong> },
-                      { key: "flow_orig", label: "Flow Orig" },
-                      { key: "flow_dest", label: "Flow Dest" },
-                      { key: "flow_pax_est", label: "Flow Pax", render: (v) => formatNumber(v, 1) },
-                      { key: "flow_revenue_est", label: "Flow Revenue", render: (v) => formatNumber(v, 0) },
+                      { key: "label", label: "OD", render: (v) => <strong>{v}</strong> },
+                      { key: "flow_orig", label: "Orig" },
+                      { key: "flow_dest", label: "Dest" },
+                      { key: "flow_pax_est", label: "Pax", render: (v) => formatNumber(v, 1) },
+                      { key: "flow_revenue_est", label: "Revenue", render: (v) => formatNumber(v, 0) },
                     ]}
                     rows={fvFlowRows}
                     emptyMessage="No flow OD data found."
